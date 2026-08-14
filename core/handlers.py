@@ -12,6 +12,7 @@ from core.patterns import analyze_patterns
 from groq import Groq
 
 MSK_TZ = timezone(timedelta(hours=3))
+TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0}
 
 def clean_symbol(symbol: str) -> str:
     return symbol.replace("-USDT", "").replace("USDT", "")
@@ -26,18 +27,26 @@ def build_inline_keyboard(raw_buttons):
 
 def register_custom_handlers(dp, bot=None):
     
-    # --- СКАНИРОВАНИЕ ---
+    # Полный список активов (включая Золото XAU и Серебро XAG)
+    COINS = [
+        "BTC-USDT", "ETH-USDT", "SOL-USDT", "KAS-USDT", "LTC-USDT", 
+        "DOT-USDT", "DOGE-USDT", "ATOM-USDT", "ADA-USDT",
+        "XAU-USDT", "XAG-USDT"
+    ]
+
+    # --- СКАНИРОВАНИЕ ОТДЕЛЬНОГО ТФ ---
     async def run_scan(message: Message, tf: str):
         await message.answer(f"⏳ Сканирую {tf}...")
         try:
-            coins = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "KAS-USDT", "LTC-USDT", "DOT-USDT", "DOGE-USDT", "ATOM-USDT", "ADA-USDT"]
             report_data = []
-            for coin in coins:
+            for coin in COINS:
                 df = await fetch_klines(coin, tf, limit=30)
                 if df is not None:
                     pats = analyze_patterns(df)
                     if pats:
-                        curr = df.iloc[-1]
+                        # В зависимости от логики правила 5 минут берем iloc[-1] или iloc[-2]
+                        now_dt = datetime.now(MSK_TZ)
+                        curr = df.iloc[-1] if now_dt.minute >= 55 else df.iloc[-2]
                         direction = "bull" if curr['close'] >= curr['open'] else "bear"
                         for p in pats:
                             report_data.append({"symbol": clean_symbol(coin), "tf": tf, "pattern": p, "direction": direction})
@@ -49,8 +58,45 @@ def register_custom_handlers(dp, bot=None):
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
 
+    # --- СВОДНОЕ СКАНИРОВАНИЕ ВСЕХ ТФ ДЛЯ КОМАНДЫ /scan ---
     @dp.message(Command("scan"))
-    async def cmd_scan(message: Message): await run_scan(message, "1h")
+    async def cmd_scan_all(message: Message):
+        await message.answer("⏳ Сканирую все таймфреймы (1H, 4H, 1D, 1W)...")
+        try:
+            timeframes = ["1w", "1d", "4h", "1h"]
+            all_signals = []
+            
+            for tf in timeframes:
+                for coin in COINS:
+                    df = await fetch_klines(coin, tf, limit=30)
+                    if df is not None:
+                        pats = analyze_patterns(df)
+                        if pats:
+                            now_dt = datetime.now(MSK_TZ)
+                            curr = df.iloc[-1] if now_dt.minute >= 55 else df.iloc[-2]
+                            direction = "bull" if curr['close'] >= curr['open'] else "bear"
+                            for p in pats:
+                                all_signals.append({
+                                    "symbol": clean_symbol(coin),
+                                    "tf": tf,
+                                    "pattern": p,
+                                    "direction": direction
+                                })
+            
+            # Сортировка: 1. Алфавит активов (A-Z), 2. Старшинство ТФ (1W -> 1D -> 4H -> 1H)
+            all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
+            
+            now_dt = datetime.now(MSK_TZ)
+            title = f"📊 Сводный Отчёт ({now_dt.strftime('%d.%m.%Y %H:%M MSK')})"
+            
+            if all_signals:
+                report_text = format_table_report(all_signals, report_title=title, now_dt=now_dt, tf_type="multi")
+                await message.answer(report_text, parse_mode="HTML")
+            else:
+                await message.answer(f"<b>{title}</b>\n\n✅ Сигналов по отслеживаемым паттернам не найдено.", parse_mode="HTML")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}")
+
     @dp.message(Command("scan_1h"))
     async def cmd_scan_1h(message: Message): await run_scan(message, "1h")
     @dp.message(Command("scan_4h"))
@@ -167,4 +213,3 @@ def register_custom_handlers(dp, bot=None):
         if res and "content" in res:
             reply_markup = build_inline_keyboard(res.get("markup"))
             await message.answer(res["content"], parse_mode="HTML", reply_markup=reply_markup)
-
