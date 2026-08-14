@@ -59,7 +59,12 @@ async def run_auto_schedule():
         timeframes = list(set(timeframes))
         logging.info(f"🚀 Запуск АвтоОтчёта для ТФ: {timeframes}")
         
-        coins = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "KAS-USDT", "LTC-USDT", "DOT-USDT", "DOGE-USDT", "ATOM-USDT", "ADA-USDT"]
+        # Список активов включая Золото (XAU-USDT) и Серебро (XAG-USDT)
+        coins = [
+            "BTC-USDT", "ETH-USDT", "SOL-USDT", "KAS-USDT", "LTC-USDT", 
+            "DOT-USDT", "DOGE-USDT", "ATOM-USDT", "ADA-USDT",
+            "XAU-USDT", "XAG-USDT"
+        ]
         all_signals = []
         
         for tf in timeframes:
