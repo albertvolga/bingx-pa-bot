@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from aiogram import F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest
 from core.ai_handler import process_ai_message, format_alerts_table
 from core.formatter import format_table_report
 from core.database import get_all_alerts, delete_alert, clear_all_alerts
@@ -36,7 +37,7 @@ def register_custom_handlers(dp, bot=None):
 
     # --- СКАНИРОВАНИЕ ОТДЕЛЬНОГО ТФ ---
     async def run_scan(message: Message, tf: str):
-        await message.answer(f"⏳ Сканирую {tf}...")
+        status_msg = await message.answer(f"⏳ Сканирую {tf}...")
         try:
             report_data = []
             for coin in COINS:
@@ -57,11 +58,16 @@ def register_custom_handlers(dp, bot=None):
                 await message.answer(f"✅ На {tf} интересных паттернов пока не найдено.")
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
+        finally:
+            try:
+                await status_msg.delete()
+            except TelegramBadRequest:
+                pass
 
     # --- СВОДНОЕ СКАНИРОВАНИЕ ВСЕХ ТФ ДЛЯ КОМАНДЫ /scan ---
     @dp.message(Command("scan"))
     async def cmd_scan_all(message: Message):
-        await message.answer("⏳ Сканирую все таймфреймы (1H, 4H, 1D, 1W)...")
+        status_msg = await message.answer("⏳ Сканирую все таймфреймы (1W, 1D, 4H, 1H)...")
         try:
             timeframes = ["1w", "1d", "4h", "1h"]
             all_signals = []
@@ -96,6 +102,11 @@ def register_custom_handlers(dp, bot=None):
                 await message.answer(f"<b>{title}</b>\n\n✅ Сигналов по отслеживаемым паттернам не найдено.", parse_mode="HTML")
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
+        finally:
+            try:
+                await status_msg.delete()
+            except TelegramBadRequest:
+                pass
 
     @dp.message(Command("scan_1h"))
     async def cmd_scan_1h(message: Message): await run_scan(message, "1h")

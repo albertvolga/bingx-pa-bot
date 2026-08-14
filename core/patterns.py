@@ -22,11 +22,33 @@ def is_outside_bar(candle, prev_candle):
 def is_inside_bar(candle, prev_candle):
     return (candle['high'] < prev_candle['high']) and (candle['low'] > prev_candle['low'])
 
-def is_ppr(candle, prev_candle):
-    is_bearish_ppr = (candle['high'] > prev_candle['high']) and (candle['close'] < prev_candle['open'])
-    is_bullish_ppr = (candle['low'] < prev_candle['low']) and (candle['close'] > prev_candle['open'])
+def is_ppr(candle, prev_candle, prev_prev_candle):
+    """
+    Классический Pivot Point Reversal (ППР):
+    1. Медвежий PPR:
+       - prev_candle делает High выше, чем prev_prev_candle
+       - candle делает High выше, чем prev_candle
+       - candle закрывается НИЖЕ Low prev_candle (curr['close'] < prev['low'])
+    2. Бычий PPR:
+       - prev_candle делает Low ниже, чем prev_prev_candle
+       - candle делает Low ниже, чем prev_candle
+       - candle закрывается ВЫШЕ High prev_candle (curr['close'] > prev['high'])
+    """
+    is_bearish_ppr = (
+        (prev_candle['high'] > prev_prev_candle['high']) and
+        (candle['high'] > prev_candle['high']) and
+        (candle['close'] < prev_candle['low'])
+    )
+    
+    is_bullish_ppr = (
+        (prev_candle['low'] < prev_prev_candle['low']) and
+        (candle['low'] < prev_candle['low']) and
+        (candle['close'] > prev_candle['high'])
+    )
+    
     if is_outside_bar(candle, prev_candle):
         return False
+        
     return is_bearish_ppr or is_bullish_ppr
 
 def is_squat(candle, prev_candle=None):
@@ -39,7 +61,7 @@ def is_squat(candle, prev_candle=None):
     return (candle['volume'] > prev_candle['volume']) and (spread < prev_spread)
 
 def analyze_patterns(df: pd.DataFrame, force_current: bool = False) -> list:
-    if len(df) < 3:
+    if len(df) < 4:
         return []
         
     now = datetime.now(MSK_TZ)
@@ -49,9 +71,11 @@ def analyze_patterns(df: pd.DataFrame, force_current: bool = False) -> list:
     if force_current or now.minute >= 55:
         curr = df.iloc[-1]
         prev = df.iloc[-2]
+        prev_prev = df.iloc[-3]
     else:
         curr = df.iloc[-2]
         prev = df.iloc[-3]
+        prev_prev = df.iloc[-4]
         
     signals = []
     
@@ -61,7 +85,7 @@ def analyze_patterns(df: pd.DataFrame, force_current: bool = False) -> list:
         signals.append("Outside Bar")
     elif is_inside_bar(curr, prev):
         signals.append("Inside Bar")
-    elif is_ppr(curr, prev):
+    elif is_ppr(curr, prev, prev_prev):
         signals.append("PPR")
         
     if is_squat(curr, prev):
