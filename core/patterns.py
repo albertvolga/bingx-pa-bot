@@ -11,34 +11,26 @@ def is_pin_bar(candle):
     body = abs(close_p - open_p)
     upper_shadow = high - max(open_p, close_p)
     lower_shadow = min(open_p, close_p) - low
-    
-    # Пин-бар: длинный хвост более 60% от всей свечи и маленькое тело
-    if (upper_shadow / total_range > 0.6 or lower_shadow / total_range > 0.6) and (body / total_range < 0.3):
-        return True
-    return False
+    return (upper_shadow / total_range > 0.6 or lower_shadow / total_range > 0.6) and (body / total_range < 0.3)
 
 def is_outside_bar(candle, prev_candle):
-    """
-    Out (Outside Bar): High выше предыдущего High И Low ниже предыдущего Low.
-    """
+    """Outside Bar (Внешний бар)"""
     return (candle['high'] > prev_candle['high']) and (candle['low'] < prev_candle['low'])
 
+def is_inside_bar(candle, prev_candle):
+    """Inside Bar (Внутренний бар / Инсайд-бар)"""
+    return (candle['high'] < prev_candle['high']) and (candle['low'] > prev_candle['low'])
+
 def is_ppr(candle, prev_candle):
-    """
-    PPR (Pivot Point Reversal):
-    Медвежий PPR: High > Prev_High, но Close < Prev_Open.
-    Бычий PPR: Low < Prev_Low, но Close > Prev_Open.
-    """
+    """PPR (Pivot Point Reversal)"""
     is_bearish_ppr = (candle['high'] > prev_candle['high']) and (candle['close'] < prev_candle['open'])
     is_bullish_ppr = (candle['low'] < prev_candle['low']) and (candle['close'] > prev_candle['open'])
-    
     if is_outside_bar(candle, prev_candle):
         return False
-        
     return is_bearish_ppr or is_bullish_ppr
 
 def is_squat(candle, prev_candle=None):
-    """Приседающий бар: рост объема при уменьшении спрэда/диапазона."""
+    """Приседающий бар"""
     if prev_candle is None or 'volume' not in candle:
         return False
     spread = candle['high'] - candle['low']
@@ -48,13 +40,12 @@ def is_squat(candle, prev_candle=None):
     return (candle['volume'] > prev_candle['volume']) and (spread < prev_spread)
 
 def analyze_patterns(df: pd.DataFrame, is_historical: bool = False) -> list:
-    if len(df) < 3:
+    if len(df) < 2:
         return []
         
-    # Берём df.iloc[-2] как ПОСЛЕДНЮЮ ЗАКРЫТУЮ СВЕЧУ,
-    # так как df.iloc[-1] — это текущий формирующийся бар на BingX
-    curr = df.iloc[-2]
-    prev = df.iloc[-3]
+    # Анализируем текущий формирующийся бар (df.iloc[-1]) за 5 мин до закрытия
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
     
     signals = []
     
@@ -62,6 +53,8 @@ def analyze_patterns(df: pd.DataFrame, is_historical: bool = False) -> list:
         signals.append("Pin Bar")
     if is_outside_bar(curr, prev):
         signals.append("Outside Bar")
+    elif is_inside_bar(curr, prev):
+        signals.append("Inside Bar")
     elif is_ppr(curr, prev):
         signals.append("PPR")
         

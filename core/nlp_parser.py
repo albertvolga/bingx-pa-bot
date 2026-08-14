@@ -1,46 +1,103 @@
+import os
 import json
+import re
 from google import genai
-from config import GEMINI_API_KEY
+
+# Берем API-ключ из окружения или из config
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")
+if not GEMINI_API_KEY:
+    try:
+        import config
+        GEMINI_API_KEY = getattr(config, "GEMINI_API_KEY", getattr(config, "GROQ_API_KEY", None))
+    except Exception:
+        pass
+
+COIN_MAP = {
+    "каспу": "KAS", "каспа": "KAS", "каспе": "KAS", "kaspa": "KAS", "kas": "KAS",
+    "биток": "BTC", "биткоин": "BTC", "биткоина": "BTC", "биткоине": "BTC", "btc": "BTC", "bitcoin": "BTC",
+    "эфир": "ETH", "эфириум": "ETH", "эфира": "ETH", "eth": "ETH", "ethereum": "ETH",
+    "соляну": "SOL", "соляна": "SOL", "солану": "SOL", "солана": "SOL", "sol": "SOL", "solana": "SOL",
+    "рипл": "XRP", "риппл": "XRP", "xrp": "XRP",
+    "доги": "DOGE", "догкоин": "DOGE", "doge": "DOGE",
+    "тон": "TON", "тонкоин": "TON", "ton": "TON"
+}
+
+def normalize_timeframe(text: str) -> str:
+    text_lower = text.lower()
+    if re.search(r'4\s*(?:х|х-часовой|-часовый|-часовой|часа|часовую|h|ч)', text_lower):
+        return "4h"
+    if re.search(r'1\s*(?:х|х-часовой|-часовый|-часовой|час|часовую|h|ч)', text_lower):
+        return "1h"
+    if re.search(r'15\s*(?:минут|мин|m)', text_lower):
+        return "15m"
+    if re.search(r'5\s*(?:минут|мин|m)', text_lower):
+        return "5m"
+    if re.search(r'1\s*(?:день|дневка|дневной|дневную|d|д)', text_lower):
+        return "1d"
+    return "1h"
 
 def parse_user_intent(user_text: str) -> dict:
-    if not GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY не установлен в .env"}
+    user_text_lower = user_text.lower()
+    detected_symbol = None
+    for word, symbol in COIN_MAP.items():
+        if re.search(r'\b' + re.escape(word) + r'\b', user_text_lower):
+            detected_symbol = symbol
+            break
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        system_instruction = (
-            "Ты — умный и дружелюбный ассистент трейдера по Price Action на бирже BingX.\n"
-            "Твоя задача — проанализировать сообщение пользователя и вернуть ответ strictly в формате JSON.\n\n"
-            "Формат JSON ответа:\n"
-            "{\n"
-            '  "type": "chat" | "alert",\n'
-            '  "reply": "Твой живой человеческий ответ трейдеру (если type=chat или нужно прокомментировать)",\n'
-            '  "symbol": "BTC" | "ETH" | ... (сокращенный тикер без USDT, только если type=alert),\n'
-            '  "level_type": "exact" | "prev_d1_high" | "prev_d1_low" | null,\n'
-            '  "target_price": float | null,\n'
-            '  "is_multi": boolean\n'
-            "}\n\n"
-            "Правила распознавания типов запроса:\n"
-            "1. Если пользователь просто общается, задает вопросы по рынку, трейдингу или жизнь — 'type': 'chat'. Помоги ему и ответь простым, понятным языком профессионального трейдера.\n"
-            "2. Если пользователь хочет поставить алерт/напоминание на цену (например: 'поставь алерт на биткоин 65000', 'предупреди когда эфир пробьет хай вчерашнего дня') — 'type': 'alert'.\n"
-            "   - Определи символ ('BTC', 'ETH', 'SOL' и т.д.).\n"
-            "   - Определи точную цену 'target_price' ИЛИ 'level_type' ('prev_d1_high' для максимума вчерашнего дня, 'prev_d1_low' для минимума).\n"
-            "   - 'is_multi': true, если пользователь просит многоразовый алерт, иначе false."
-        )
+    timeframe = normalize_timeframe(user_text)
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_text,
-            config={
-                "system_instruction": system_instruction,
-                "response_mime_type": "application/json",
-            }
-        )
+    # Определяем тип уровня по тексту (лоу, хай, поу)
+    level_type = "exact"
+    if "лоу" in user_text_lower or "low" in user_text_lower or "минимум" in user_text_lower:
+        level_type = "prev_candle_low"
+    elif "хай" in user_text_lower or "high" in user_text_lower or "максимум" in user_text_lower:
+        level_type = "prev_candle_high"
+    elif "поу" in user_text_lower or "pou" in user_text_lower or "закрытие" in user_text_lower:
+        level_type = "prev_candle_close"
 
-        data = json.loads(response.text)
-        return data
+    # Базовая структура запроса
+    parsed = {
+        "type": "alert" if ("алерт" in user_text_lower or "поставь" in user_text_lower or "установи" in user_text_lower) else "chat",
+        "symbol": detected_symbol or "BTC",
+        "timeframe": timeframe,
+        "level_type": level_type,
+        "reply": "Обрабатываю ваш запрос..."
+    }
 
-    except Exception as e:
-        print(f"⚠️ Ошибка Gemini NLP: {e}")
-        return {"error": str(e)}
+    if GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            system_instruction = (
+                "Ты — умный ассистент трейдера по Price Action.\n"
+                "Верни ответ STRICTLY в JSON:\n"
+                "{\n"
+                '  "type": "chat" | "alert",\n'
+                '  "symbol": "KAS" | "BTC" | "ETH" | ...,\n'
+                '  "timeframe": "4h" | "1h" | "15m" | "1d",\n'
+                '  "level_type": "prev_candle_low" | "prev_candle_high" | "prev_candle_close" | "exact",\n'
+                '  "reply": "текст ответа"\n'
+                "}"
+            )
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_text,
+                config={
+                    "system_instruction": system_instruction,
+                    "response_mime_type": "application/json",
+                }
+            )
+            data = json.loads(response.text)
+            if isinstance(data, dict):
+                parsed.update(data)
+        except Exception as e:
+            print(f"⚠️ Warning Gemini NLP: {e}")
+
+    # Локальные правила в приоритете для русских названий и таймфреймов
+    if detected_symbol:
+        parsed["symbol"] = detected_symbol
+    if timeframe:
+        parsed["timeframe"] = timeframe
+    if level_type != "exact":
+        parsed["level_type"] = level_type
+
+    return parsed

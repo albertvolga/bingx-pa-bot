@@ -1,3 +1,3 @@
 #!/bin/bash
-echo "=== Проверка логов и запуск бота ==="
-python3 main.py
+source /root/bingx-pa-bot/.venv/bin/activate
+python main.py
