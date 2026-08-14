@@ -1,66 +1,82 @@
-import requests
-import pandas as pd
-from datetime import datetime
-import pytz
-from config import SYMBOL_MAP
+import aiohttp
+import asyncio
 
-MSK_TZ = pytz.timezone('Europe/Moscow')
+BINGX_BASE_URL = "https://open-api.bingx.com"
 
-TF_SECONDS = {
-    '1m': 60,
-    '3m': 180,
-    '5m': 300,
-    '15m': 900,
-    '30m': 1800,
-    '1h': 3600,
-    '2h': 7200,
-    '4h': 14400,
-    '6h': 21600,
-    '12h': 43200,
-    '1d': 86400
-}
-
-def fetch_bingx_candles(symbol: str, interval: str, limit: int = 30, end_time: int = None) -> pd.DataFrame:
+async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
     """
-    Загружает исторические свечи с BingX API.
+    Получение свечей BingX (поддерживает аргументы timeframe и interval)
     """
-    # Преобразуем BTC -> BTC-USDT, если передан короткий тикер
-    api_symbol = SYMBOL_MAP.get(symbol, symbol)
-    api_interval = interval.lower() # Убеждаемся в нижнем регистре (1h, 4h, 1d)
-
-    url = "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
-    
-    params = {
-        "symbol": api_symbol,
-        "interval": api_interval,
-        "limit": limit
+    tf = interval or timeframe or "1h"
+    tf_map = {
+        "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
     }
+    tf_val = tf_map.get(str(tf).lower(), "1h")
     
-    if end_time is not None:
-        tf_sec = TF_SECONDS.get(api_interval, 3600)
-        start_time = end_time - (limit * tf_sec * 1000)
-        params["startTime"] = start_time
-        params["endTime"] = end_time
+    sym = symbol.upper()
+    if not sym.endswith("-USDT"):
+        sym = f"{sym}-USDT"
 
-    try:
-        response = requests.get(url, params=params, timeout=5)
-        data = response.json()
-        
-        if data.get("code") != 0 or not data.get("data"):
-            return pd.DataFrame()
+    # Пробуем сначала Swap API, при ошибке контракта — Spot API
+    urls = [
+        f"{BINGX_BASE_URL}/openApi/swap/v2/quote/klines",
+        f"{BINGX_BASE_URL}/openApi/spot/v1/market/kline"
+    ]
 
-        klines = data["data"]
-        df = pd.DataFrame(klines)
-        
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            if col in df.columns:
-                df[col] = df[col].astype(float)
-            
-        df['timestamp'] = df['time'].astype(int) // 1000
-        df['datetime_msk'] = df['timestamp'].apply(lambda x: datetime.fromtimestamp(x, MSK_TZ))
-        df = df.sort_values('timestamp').reset_index(drop=True)
-        
-        return df
-    except Exception as e:
-        print(f"⚠️ Ошибка сети или таймаут BingX ({symbol} {interval}): {e}")
-        return pd.DataFrame()
+    for url in urls:
+        params = {
+            "symbol": sym,
+            "interval": tf_val,
+            "limit": limit
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as resp:
+                    data = await resp.json()
+                    if data.get("code") == 0 and "data" in data:
+                        raw_klines = data["data"]
+                        # Приводим к единому формату time/high/low/close
+                        klines = []
+                        for k in raw_klines:
+                            klines.append({
+                                "time": k.get("time") or k.get("time"),
+                                "high": float(k.get("high")),
+                                "low": float(k.get("low")),
+                                "close": float(k.get("close")),
+                                "open": float(k.get("open", 0))
+                            })
+                        return sorted(klines, key=lambda x: x["time"])
+        except Exception:
+            continue
+
+    print(f"⚠️ BingX API: Не удалось загрузить свечи для {sym}")
+    return []
+
+async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
+    return await fetch_bingx_candles(symbol, timeframe=timeframe, limit=limit, interval=interval)
+
+async def get_ticker_price(symbol: str) -> float:
+    sym = symbol.upper()
+    if not sym.endswith("-USDT"):
+        sym = f"{sym}-USDT"
+
+    urls = [
+        (f"{BINGX_BASE_URL}/openApi/swap/v2/quote/price", {"symbol": sym}),
+        (f"{BINGX_BASE_URL}/openApi/spot/v1/ticker/24hr", {"symbol": sym})
+    ]
+
+    for url, params in urls:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as resp:
+                    data = await resp.json()
+                    if data.get("code") == 0 and "data" in data:
+                        res = data["data"]
+                        if isinstance(res, list) and len(res) > 0:
+                            return float(res[0].get("lastPrice", 0))
+                        elif isinstance(res, dict):
+                            return float(res.get("price") or res.get("lastPrice") or 0)
+        except Exception:
+            continue
+    return 0.0

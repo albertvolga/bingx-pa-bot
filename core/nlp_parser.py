@@ -3,7 +3,6 @@ import json
 import re
 from google import genai
 
-# Берем API-ключ из окружения или из config
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")
 if not GEMINI_API_KEY:
     try:
@@ -20,8 +19,9 @@ COIN_MAP = {
     "рипл": "XRP", "риппл": "XRP", "xrp": "XRP",
     "доги": "DOGE", "догкоин": "DOGE", "doge": "DOGE",
     "тон": "TON", "тонкоин": "TON", "ton": "TON",
-    "золото": "XAU", "голд": "XAU", "xau": "XAU", "gold": "XAU",
-    "серебро": "XAG", "сильвер": "XAG", "xag": "XAG", "silver": "XAG"
+    "лайт": "LTC", "лайткоин": "LTC", "lite": "LTC", "ltc": "LTC",
+    "золото": "PAXG", "голд": "PAXG", "xau": "PAXG", "gold": "PAXG", "paxg": "PAXG",
+    "серебро": "SILVER", "сильвер": "XAG", "xag": "SILVER", "silver": "SILVER"
 }
 
 def normalize_timeframe(text: str) -> str:
@@ -48,7 +48,6 @@ def parse_user_intent(user_text: str) -> dict:
 
     timeframe = normalize_timeframe(user_text)
 
-    # Определяем тип уровня по тексту (хай и лоу одновременно, либо по отдельности)
     has_low = "лоу" in user_text_lower or "low" in user_text_lower or "минимум" in user_text_lower
     has_high = "хай" in user_text_lower or "high" in user_text_lower or "максимум" in user_text_lower
     has_close = "поу" in user_text_lower or "pou" in user_text_lower or "закрытие" in user_text_lower
@@ -64,9 +63,8 @@ def parse_user_intent(user_text: str) -> dict:
     else:
         level_type = "exact"
 
-    # Базовая структура запроса
     parsed = {
-        "type": "alert" if ("алерт" in user_text_lower or "поставь" in user_text_lower or "установи" in user_text_lower) else "chat",
+        "type": "alert" if any(w in user_text_lower for w in ["алерт", "поставь", "установи", "оставь"]) else "chat",
         "symbol": detected_symbol or "BTC",
         "timeframe": timeframe,
         "level_type": level_type,
@@ -81,7 +79,7 @@ def parse_user_intent(user_text: str) -> dict:
                 "Верни ответ STRICTLY в JSON:\n"
                 "{\n"
                 '  "type": "chat" | "alert",\n'
-                '  "symbol": "KAS" | "BTC" | "ETH" | "XAU" | "XAG" | ...,\n'
+                '  "symbol": "KAS" | "BTC" | "ETH" | "PAXG" | "LTC" | ...,\n'
                 '  "timeframe": "4h" | "1h" | "15m" | "1d",\n'
                 '  "level_type": "prev_candle_high_low" | "prev_candle_low" | "prev_candle_high" | "prev_candle_close" | "exact",\n'
                 '  "reply": "текст ответа"\n'
@@ -101,9 +99,12 @@ def parse_user_intent(user_text: str) -> dict:
         except Exception as e:
             print(f"⚠️ Warning Gemini NLP: {e}")
 
-    # Локальные правила в приоритете для русских названий и таймфреймов
+    # Жесткий перехват тикеров из локального словаря
     if detected_symbol:
         parsed["symbol"] = detected_symbol
+    elif parsed.get("symbol") in ["XAU", "GOLD"]:
+        parsed["symbol"] = "PAXG"
+
     if timeframe:
         parsed["timeframe"] = timeframe
     if level_type != "exact":

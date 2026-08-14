@@ -1,92 +1,90 @@
 import sqlite3
-from pathlib import Path
-from datetime import datetime
+import os
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "bot.db"
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alerts.db")
 
-def get_connection():
+def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('PRAGMA journal_mode=WAL;')
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                symbol TEXT,
-                target_price REAL,
-                alert_type TEXT,
-                comment TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS timers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                trigger_time TIMESTAMP,
-                message TEXT
-            )
-        ''')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            target_price REAL NOT NULL,
+            note TEXT DEFAULT 'Алерт',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    
+    # Проверяем, есть ли колонка note (на случай старой базы)
+    cursor.execute("PRAGMA table_info(alerts)")
+    columns = [col["name"] for col in cursor.fetchall()]
+    if "note" not in columns:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN note TEXT DEFAULT 'Алерт'")
         conn.commit()
 
-def add_alert(symbol: str, target_price: float, alert_type: str = "CROSS", comment: str = "", chat_id: int = None):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO alerts (chat_id, symbol, target_price, alert_type, comment)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (chat_id, symbol, target_price, alert_type, comment))
-        conn.commit()
+    conn.close()
+
+def add_alert(chat_id: int, symbol: str, target_price: float, note: str = "Алерт") -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO alerts (chat_id, symbol, target_price, note) VALUES (?, ?, ?, ?)",
+        (chat_id, symbol.upper(), target_price, note)
+    )
+    conn.commit()
+    alert_id = cursor.lastrowid
+    conn.close()
+    return alert_id
 
 def get_all_alerts(chat_id: int = None):
-    with get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        if chat_id:
-            cursor.execute('SELECT * FROM alerts WHERE chat_id = ? ORDER BY id ASC', (chat_id,))
-        else:
-            cursor.execute('SELECT * FROM alerts ORDER BY id ASC')
-        return cursor.fetchall()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if chat_id:
+        cursor.execute("SELECT * FROM alerts WHERE chat_id = ? ORDER BY id ASC", (chat_id,))
+    else:
+        cursor.execute("SELECT * FROM alerts ORDER BY id ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 def delete_alert(alert_id: int, chat_id: int = None):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        if chat_id:
-            cursor.execute('DELETE FROM alerts WHERE id = ? AND chat_id = ?', (alert_id, chat_id))
-        else:
-            cursor.execute('DELETE FROM alerts WHERE id = ?', (alert_id,))
-        conn.commit()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if chat_id:
+        cursor.execute("DELETE FROM alerts WHERE id = ? AND chat_id = ?", (alert_id, chat_id))
+    else:
+        cursor.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+    conn.commit()
+    conn.close()
 
 def clear_all_alerts(chat_id: int = None):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        if chat_id:
-            cursor.execute('DELETE FROM alerts WHERE chat_id = ?', (chat_id,))
-        else:
-            cursor.execute('DELETE FROM alerts')
-        conn.commit()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if chat_id:
+        cursor.execute("DELETE FROM alerts WHERE chat_id = ?", (chat_id,))
+    else:
+        cursor.execute("DELETE FROM alerts")
+    conn.commit()
+    conn.close()
 
-def add_timer(chat_id: int, trigger_time: datetime, message: str):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO timers (chat_id, trigger_time, message) VALUES (?, ?, ?)',
-                       (chat_id, trigger_time.isoformat(), message))
-        conn.commit()
+def clear_user_alerts(chat_id: int):
+    clear_all_alerts(chat_id)
 
-def get_pending_timers():
-    with get_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM timers')
-        return cursor.fetchall()
+# Инициализируем БД при импорте
+init_db()
 
-def delete_timer(timer_id: int):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM timers WHERE id = ?', (timer_id,))
-        conn.commit()
+def clear_all_alerts(chat_id: int):
+    """Удаление всех алертов для чата"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM alerts WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
