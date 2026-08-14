@@ -63,11 +63,10 @@ async def process_ai_message(user_text: str, chat_id: int) -> dict:
         symbol_full = f"{symbol_short}-USDT"
         timeframe = data.get("timeframe") or "1h"
         level_type = data.get("level_type", "exact")
-        target_price = data.get("target_price")
 
-        level_desc = "Ценовой уровень"
-        
-        if level_type in ["prev_candle_high", "prev_candle_low", "prev_candle_close", "prev_candle_open", "pou", "prev_d1_high", "prev_d1_low"]:
+        created_alerts = []
+
+        if level_type in ["prev_candle_high_low", "prev_candle_high", "prev_candle_low", "prev_candle_close", "prev_candle_open", "pou", "prev_d1_high", "prev_d1_low"]:
             df = await fetch_klines(symbol_full, timeframe, limit=5)
             if df is not None and len(df) >= 2:
                 prev_candle = df.iloc[-2]
@@ -77,54 +76,98 @@ async def process_ai_message(user_text: str, chat_id: int) -> dict:
                 c_open = float(prev_candle['open'])
                 c_time = prev_candle.name.strftime('%d.%m %H:%M') if hasattr(prev_candle.name, 'strftime') else ""
 
-                if level_type in ["prev_candle_low", "prev_d1_low"]:
-                    target_price = c_low
-                    level_desc = f"Low {timeframe.upper()} {c_time}"
+                if level_type == "prev_candle_high_low":
+                    # Создаем два алерта (High и Low)
+                    aid_h = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_high, note=f"High {timeframe.upper()} {c_time}")
+                    aid_l = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_low, note=f"Low {timeframe.upper()} {c_time}")
+                    created_alerts.append((c_high, f"High {timeframe.upper()} {c_time}", aid_h))
+                    created_alerts.append((c_low, f"Low {timeframe.upper()} {c_time}", aid_l))
+                elif level_type in ["prev_candle_low", "prev_d1_low"]:
+                    aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_low, note=f"Low {timeframe.upper()} {c_time}")
+                    created_alerts.append((c_low, f"Low {timeframe.upper()} {c_time}", aid))
                 elif level_type in ["prev_candle_high", "prev_d1_high"]:
-                    target_price = c_high
-                    level_desc = f"High {timeframe.upper()} {c_time}"
+                    aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_high, note=f"High {timeframe.upper()} {c_time}")
+                    created_alerts.append((c_high, f"High {timeframe.upper()} {c_time}", aid))
                 elif level_type in ["prev_candle_close", "pou"]:
-                    target_price = c_close
-                    level_desc = f"POU {timeframe.upper()} {c_time}"
+                    aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_close, note=f"POU {timeframe.upper()} {c_time}")
+                    created_alerts.append((c_close, f"POU {timeframe.upper()} {c_time}", aid))
                 elif level_type == "prev_candle_open":
-                    target_price = c_open
-                    level_desc = f"Open {timeframe.upper()} {c_time}"
+                    aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=c_open, note=f"Open {timeframe.upper()} {c_time}")
+                    created_alerts.append((c_open, f"Open {timeframe.upper()} {c_time}", aid))
             else:
                 return {"content": f"❌ Не удалось получить данные по свечам для {symbol_short} ({timeframe})."}
+        else:
+            # Ручной ввод точной цены
+            target_price = data.get("target_price")
+            if target_price:
+                aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=target_price, note="Точный уровень")
+                created_alerts.append((target_price, "Точный уровень", aid))
 
-        if not target_price:
+        if not created_alerts:
             return {"content": "❌ Не удалось определить цену для алерта. Укажите конкретный уровень."}
 
-        alert_id = add_alert(
-            chat_id=chat_id,
-            symbol=symbol_short,
-            target_price=target_price,
-            is_multi=data.get("is_multi", False),
-            note=level_desc
-        )
+        cards = []
+        buttons = []
+        for price, desc, aid in created_alerts:
+            price_str = f"{price:.4f}" if price < 1 else f"{price:.1f}" if price > 1000 else f"{price:.2f}"
+            cards.append(f"📌 <b>{symbol_short}</b> ({timeframe.upper()}) -> <b>{price_str}</b> [{desc}]")
+            buttons.append({"text": f"❌ Удалить {price_str}", "callback_data": f"del_alert_{aid}"})
 
-        price_str = f"{target_price:.4f}" if target_price < 1 else f"{target_price:.1f}" if target_price > 1000 else f"{target_price:.2f}"
-
-        single_card = (
-            f"✅ <b>АЛЕРТ УСПЕШНО УСТАНОВЛЕН!</b>\n\n"
-            f"<pre>"
-            f"📌 Актив:     {symbol_short}\n"
-            f"⏱ ТФ:        {timeframe.upper()}\n"
-            f"🎯 Уровень:   {price_str}\n"
-            f"📝 Описание:  {level_desc}\n"
-            f"</pre>\n"
-            f"<i>Посмотреть все алерты: /alerts</i>"
-        )
-
-        markup = [[{"text": "❌ Удалить этот алерт", "callback_data": f"del_alert_{alert_id}"}]]
-        return {"content": single_card, "markup": markup}
+        res_text = "✅ <b>УСПЕШНО УСТАНОВЛЕНО АЛЕРТОВ: " + str(len(created_alerts)) + "</b>\n\n" + "\n".join(cards) + "\n\n<i>Посмотреть все: /alerts</i>"
+        markup = [buttons] if buttons else None
+        return {"content": res_text, "markup": markup}
 
     return {"content": "Запрос обработан."}
 
 async def timer_checker_loop(bot):
-    """Фоновая проверка срабатывания алертов"""
+    """Фоновая проверка срабатывания алертов каждые 10 секунд"""
     while True:
         try:
             await asyncio.sleep(10)
+            
+            # Получаем абсолютно все алерты из базы (chat_id=None берет все записи)
+            alerts = get_all_alerts(chat_id=None)
+            if not alerts:
+                continue
+
+            # Группируем алерты по активам, чтобы лишний раз не делать 100 запросов к BingX
+            symbols_to_check = set(alt.get("symbol") for alt in alerts if alt.get("symbol"))
+
+            for sym in symbols_to_check:
+                symbol_full = f"{sym}-USDT"
+                df = await fetch_klines(symbol_full, "1m", limit=2)
+                if df is None or len(df) == 0:
+                    continue
+
+                # Текущая цена с последней 1м свечи
+                current_price = float(df.iloc[-1]['close'])
+
+                # Проверяем все алерты по этому симболу
+                sym_alerts = [a for a in alerts if a.get("symbol") == sym]
+                for alt in sym_alerts:
+                    target_price = float(alt.get("target_price", 0))
+                    chat_id = alt.get("chat_id")
+                    alert_id = alt.get("id")
+                    note = alt.get("note", "Уровень")
+
+                    # Если цена подошла очень близко (погрешность 0.05%) или пересекла
+                    diff_pct = abs(current_price - target_price) / target_price * 100
+                    if diff_pct <= 0.08 or (current_price >= target_price and alt.get("last_price", current_price) < target_price):
+                        price_str = f"{target_price:.4f}" if target_price < 1 else f"{target_price:.1f}" if target_price > 1000 else f"{target_price:.2f}"
+                        curr_str = f"{current_price:.4f}" if current_price < 1 else f"{current_price:.1f}" if current_price > 1000 else f"{current_price:.2f}"
+                        
+                        msg = (
+                            f"🚨 <b>СРАБОТАЛ АЛЕРТ!</b> 🚨\n\n"
+                            f"🎯 <b>Актив:</b> {sym}\n"
+                            f"📍 <b>Целевой уровень:</b> {price_str} ({note})\n"
+                            f"📊 <b>Текущая цена:</b> {curr_str}\n"
+                        )
+                        try:
+                            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                            delete_alert(alert_id=alert_id, chat_id=chat_id)
+                        except Exception as send_err:
+                            print(f"⚠️ Ошибка отправки алерта: {send_err}")
+
         except Exception as e:
+            print(f"⚠️ Ошибка в timer_checker_loop: {e}")
             await asyncio.sleep(10)

@@ -19,7 +19,9 @@ COIN_MAP = {
     "соляну": "SOL", "соляна": "SOL", "солану": "SOL", "солана": "SOL", "sol": "SOL", "solana": "SOL",
     "рипл": "XRP", "риппл": "XRP", "xrp": "XRP",
     "доги": "DOGE", "догкоин": "DOGE", "doge": "DOGE",
-    "тон": "TON", "тонкоин": "TON", "ton": "TON"
+    "тон": "TON", "тонкоин": "TON", "ton": "TON",
+    "золото": "XAU", "голд": "XAU", "xau": "XAU", "gold": "XAU",
+    "серебро": "XAG", "сильвер": "XAG", "xag": "XAG", "silver": "XAG"
 }
 
 def normalize_timeframe(text: str) -> str:
@@ -46,14 +48,21 @@ def parse_user_intent(user_text: str) -> dict:
 
     timeframe = normalize_timeframe(user_text)
 
-    # Определяем тип уровня по тексту (лоу, хай, поу)
-    level_type = "exact"
-    if "лоу" in user_text_lower or "low" in user_text_lower or "минимум" in user_text_lower:
+    # Определяем тип уровня по тексту (хай и лоу одновременно, либо по отдельности)
+    has_low = "лоу" in user_text_lower or "low" in user_text_lower or "минимум" in user_text_lower
+    has_high = "хай" in user_text_lower or "high" in user_text_lower or "максимум" in user_text_lower
+    has_close = "поу" in user_text_lower or "pou" in user_text_lower or "закрытие" in user_text_lower
+
+    if has_low and has_high:
+        level_type = "prev_candle_high_low"
+    elif has_low:
         level_type = "prev_candle_low"
-    elif "хай" in user_text_lower or "high" in user_text_lower or "максимум" in user_text_lower:
+    elif has_high:
         level_type = "prev_candle_high"
-    elif "поу" in user_text_lower or "pou" in user_text_lower or "закрытие" in user_text_lower:
+    elif has_close:
         level_type = "prev_candle_close"
+    else:
+        level_type = "exact"
 
     # Базовая структура запроса
     parsed = {
@@ -72,9 +81,9 @@ def parse_user_intent(user_text: str) -> dict:
                 "Верни ответ STRICTLY в JSON:\n"
                 "{\n"
                 '  "type": "chat" | "alert",\n'
-                '  "symbol": "KAS" | "BTC" | "ETH" | ...,\n'
+                '  "symbol": "KAS" | "BTC" | "ETH" | "XAU" | "XAG" | ...,\n'
                 '  "timeframe": "4h" | "1h" | "15m" | "1d",\n'
-                '  "level_type": "prev_candle_low" | "prev_candle_high" | "prev_candle_close" | "exact",\n'
+                '  "level_type": "prev_candle_high_low" | "prev_candle_low" | "prev_candle_high" | "prev_candle_close" | "exact",\n'
                 '  "reply": "текст ответа"\n'
                 "}"
             )
