@@ -1,9 +1,10 @@
 from datetime import datetime, timezone, timedelta
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from core.database import get_user_alerts
 
 MSK_TZ = timezone(timedelta(hours=3))
 
-def build_compact_keyboard(buttons: list, row_width: int = 4) -> InlineKeyboardMarkup:
+def build_compact_keyboard(buttons: list, row_width: int = 2) -> InlineKeyboardMarkup:
     keyboard = []
     row = []
     for btn in buttons:
@@ -15,15 +16,37 @@ def build_compact_keyboard(buttons: list, row_width: int = 4) -> InlineKeyboardM
         keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def format_alerts_table(chat_id: int = None) -> tuple:
-    return "🔔 <b>Список алертов пуст.</b>", []
+def format_alerts_table(chat_id: int) -> tuple:
+    alerts = get_user_alerts(chat_id)
+    if not alerts:
+        return "🔔 <b>Список активных алертов пуст.</b>", []
+
+    lines = ["🔔 <b>Ваши активные алерты:</b>\n", "<pre>ID  | ИНСТР | ТФ  | ПАТТЕРН | ТИП"]
+    lines.append("------------------------------------")
+    
+    buttons = []
+    for aid, sym, tf, pat, is_rep in alerts:
+        tipo = "🔄 Много" if is_rep else "1️⃣ Одно"
+        lines.append(f"{str(aid).ljust(3)} | {sym[:4].ljust(4)} | {tf.upper().rjust(3)} | {pat[:7].ljust(7)} | {tipo}")
+        buttons.append(InlineKeyboardButton(text=f"❌ Удалить #{aid}", callback_data=f"del_alert_{aid}"))
+
+    lines.append("</pre>")
+    return "\n".join(lines), buttons
 
 def get_bar_close_time(tf: str, bar_time_ms: int = None, now_dt: datetime = None) -> str:
-    """Возвращает время закрытия свечи по МСК без ошибочного сдвига."""
     if bar_time_ms:
         if bar_time_ms < 10000000000:
             bar_time_ms *= 1000
         dt = datetime.fromtimestamp(bar_time_ms / 1000, tz=timezone.utc) + timedelta(hours=3)
+        tf_lower = tf.lower()
+        if tf_lower == "15m":
+            dt += timedelta(minutes=15)
+        elif tf_lower == "1h":
+            dt += timedelta(hours=1)
+        elif tf_lower == "4h":
+            dt += timedelta(hours=4)
+        elif tf_lower in ["1d", "d1"]:
+            dt += timedelta(days=1)
         return dt.strftime("%H:%M")
     
     if not now_dt:
@@ -38,11 +61,11 @@ def get_bar_close_time(tf: str, bar_time_ms: int = None, now_dt: datetime = None
             m = 0
         return f"{h:02d}:{m:02d}"
     elif tf_lower == "1h":
-        return f"{now_dt.hour:02d}:00"
+        return f"{(now_dt.hour + 1) % 24:02d}:00"
     elif tf_lower == "4h":
         current_hour = now_dt.hour
         for target_h in [3, 7, 11, 15, 19, 23]:
-            if current_hour <= target_h:
+            if current_hour < target_h:
                 return f"{target_h:02d}:00"
         return "03:00"
     elif tf_lower in ["1d", "d1", "1w", "w1"]:
@@ -51,7 +74,6 @@ def get_bar_close_time(tf: str, bar_time_ms: int = None, now_dt: datetime = None
     return now_dt.strftime("%H:%M")
 
 def format_table_report(raw_signals: list, report_title: str = "Отчёт", now_dt: datetime = None, tf_type: str = None) -> str:
-    # Исключаем дублирование даты и скобок в заголовке
     if "МСК" in report_title or "MSK" in report_title or "(" in report_title:
         header = f"📊 <b>{report_title}</b>\n\n"
     else:

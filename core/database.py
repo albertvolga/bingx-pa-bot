@@ -3,59 +3,51 @@ import os
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alerts.db")
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
             symbol TEXT NOT NULL,
-            target_price REAL NOT NULL,
-            note TEXT DEFAULT 'Алерт',
+            tf TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            is_repeating INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
-    
-    cursor.execute("PRAGMA table_info(alerts)")
-    columns = [col["name"] for col in cursor.fetchall()]
-    if "note" not in columns:
-        cursor.execute("ALTER TABLE alerts ADD COLUMN note TEXT DEFAULT 'Алерт'")
-        conn.commit()
-
     conn.close()
 
-def add_alert(chat_id: int, symbol: str, target_price: float, note: str = "Алерт") -> int:
-    conn = get_db_connection()
+def add_alert(chat_id: int, symbol: str, tf: str, pattern: str, is_repeating: bool = False):
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO alerts (chat_id, symbol, target_price, note) VALUES (?, ?, ?, ?)",
-        (chat_id, symbol.upper(), target_price, note)
-    )
+    cursor.execute("""
+        INSERT INTO alerts (chat_id, symbol, tf, pattern, is_repeating)
+        VALUES (?, ?, ?, ?, ?)
+    """, (chat_id, symbol.upper(), tf.lower(), pattern.upper(), 1 if is_repeating else 0))
     conn.commit()
-    alert_id = cursor.lastrowid
     conn.close()
-    return alert_id
 
-def get_all_alerts(chat_id: int = None):
-    conn = get_db_connection()
+def get_all_alerts():
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    if chat_id:
-        cursor.execute("SELECT * FROM alerts WHERE chat_id = ? ORDER BY id ASC", (chat_id,))
-    else:
-        cursor.execute("SELECT * FROM alerts ORDER BY id ASC")
+    cursor.execute("SELECT id, chat_id, symbol, tf, pattern, is_repeating FROM alerts")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_user_alerts(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, symbol, tf, pattern, is_repeating FROM alerts WHERE chat_id = ?", (chat_id,))
     rows = cursor.fetchall()
     conn.close()
     return rows
 
 def delete_alert(alert_id: int, chat_id: int = None):
-    conn = get_db_connection()
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     if chat_id:
         cursor.execute("DELETE FROM alerts WHERE id = ? AND chat_id = ?", (alert_id, chat_id))
@@ -64,17 +56,11 @@ def delete_alert(alert_id: int, chat_id: int = None):
     conn.commit()
     conn.close()
 
-def clear_all_alerts(chat_id: int = None):
-    conn = get_db_connection()
+def clear_all_alerts(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    if chat_id:
-        cursor.execute("DELETE FROM alerts WHERE chat_id = ?", (chat_id,))
-    else:
-        cursor.execute("DELETE FROM alerts")
+    cursor.execute("DELETE FROM alerts WHERE chat_id = ?", (chat_id,))
     conn.commit()
     conn.close()
-
-def clear_user_alerts(chat_id: int):
-    clear_all_alerts(chat_id)
 
 init_db()

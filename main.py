@@ -1,117 +1,86 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
 import pandas as pd
+from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-
-from config import TELEGRAM_BOT_TOKEN
-from core.database import init_db
-from core.ai_handler import timer_checker_loop
-from core.handlers import register_custom_handlers, clean_symbol
+from config import BOT_TOKEN, USER_ID
+from core.handlers import router, run_scan
 from core.fetcher import fetch_klines
 from core.patterns import analyze_patterns
-from core.formatter import format_table_report
-
-MSK_TZ = timezone(timedelta(hours=3))
-MY_CHAT_ID = 8029964519  # Твой личный Telegram ID
-
-TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0}
+from core.database import get_all_alerts, delete_alert
 
 logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+dp.include_router(router)
 
-async def run_auto_schedule():
-    """Фоновый цикл автосканирования за 5 минут до каждого часа"""
-    while True:
-        now = datetime.now(MSK_TZ)
-        
-        # Ближайшая 55-я минута текущего или следующего часа
-        next_run = now.replace(minute=55, second=0, microsecond=0)
-        if now >= next_run:
-            next_run += timedelta(hours=1)
-            
-        sleep_sec = (next_run - now).total_seconds()
-        logging.info(f"⏳ Следующий АвтоОтчёт запланирован на {next_run.strftime('%d.%m.%Y %H:%M:%S')} MSK (через {int(sleep_sec)} сек)")
-        await asyncio.sleep(sleep_sec)
-        
-        run_dt = datetime.now(MSK_TZ)
-        hour = run_dt.hour
-        weekday = run_dt.weekday() # 0 = ПН, 6 = ВС
-        
-        # Определяем список ТФ для сканирования
-        timeframes = ["1h"]
-        
-        # 4H сканирование в 02:55, 06:55, 10:55, 14:55, 18:55, 22:55
-        if hour in [2, 6, 10, 14, 18, 22]:
-            timeframes.append("4h")
-            
-        # 1D сканирование в 02:55 MSK (закрытие суток)
-        if hour == 2:
-            timeframes.append("1d")
-            
-            # 1W сканирование в ночь с ВС на ПН в 02:55 MSK
-            if weekday == 0 or (weekday == 6 and hour == 2):
-                timeframes.append("1w")
-                
-        timeframes = list(set(timeframes))
-        logging.info(f"🚀 Запуск АвтоОтчёта для ТФ: {timeframes}")
-        
-        # Список активов включая Золото (XAU-USDT) и Серебро (XAG-USDT)
-        coins = [
-            "BTC-USDT", "ETH-USDT", "SOL-USDT", "KAS-USDT", "LTC-USDT", 
-            "DOT-USDT", "DOGE-USDT", "ATOM-USDT", "ADA-USDT",
-            "XAU-USDT", "XAG-USDT"
-        ]
-        all_signals = []
-        
-        for tf in timeframes:
-            for coin in coins:
-                try:
-                    klines = await fetch_klines(coin, tf, limit=30)
-                    if klines:
-                        df = pd.DataFrame(klines)
-                        pats = analyze_patterns(df)
-                        if pats:
-                            curr = df.iloc[-1]
-                            direction = "bull" if curr['close'] >= curr['open'] else "bear"
-                            for p in pats:
-                                all_signals.append({
-                                    "symbol": clean_symbol(coin),
-                                    "tf": tf,
-                                    "pattern": p,
-                                    "direction": direction
-                                })
-                except Exception as e:
-                    logging.error(f"Ошибка получения {coin} {tf}: {e}")
-                    
-        # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшим
-        all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
-        
-        title = f"📊 АвтоОтчёт ({run_dt.strftime('%d.%m.%Y %H:%M')})"
-        
-        if all_signals:
-            report_text = format_table_report(all_signals, report_title=title, now_dt=run_dt, tf_type="multi")
-        else:
-            report_text = f"<b>{title}</b>\n\n✅ Интересных паттернов за 5 минут до закрытия свечей не найдено."
-            
+MSK_TZ = timezone(timedelta(hours=3))
+
+async def check_user_alerts():
+    alerts = get_all_alerts()
+    if not alerts:
+        return
+
+    for aid, chat_id, sym, tf, pat, is_repeating in alerts:
         try:
-            await bot.send_message(chat_id=MY_CHAT_ID, text=report_text, parse_mode="HTML")
-            logging.info(f"✅ АвтоОтчёт успешно отправлен пользователю {MY_CHAT_ID}")
-        except Exception as err:
-            logging.error(f"❌ Ошибка отправки АвтоОтчёта: {err}")
+            klines = await fetch_klines(sym, interval=tf, limit=10)
+            if not klines or len(klines) < 3:
+                continue
+            df = pd.DataFrame(klines)
+            found_pats = analyze_patterns(df)
+            
+            if pat.upper() in [p.upper() for p in found_pats]:
+                alert_type = "🔄 Многоразовый" if is_repeating else "1️⃣ Одноразовый"
+                msg_text = (
+                    f"🚨 <b>СРАБОТАЛ АЛЕРТ!</b> ({alert_type})\n\n"
+                    f"🔹 <b>Инструмент:</b> {sym}\n"
+                    f"🔹 <b>Таймфрейм:</b> {tf.upper()}\n"
+                    f"🔹 <b>Паттерн:</b> {pat.upper()}"
+                )
+                # disable_notification=False гарантирует пуш-уведомление со звуком
+                await bot.send_message(chat_id=chat_id, text=msg_text, parse_mode="HTML", disable_notification=False)
+                
+                # Если алерт одноразовый — удаляем из БД
+                if not is_repeating:
+                    delete_alert(aid)
+        except Exception as e:
+            logging.error(f"Ошибка проверки алерта #{aid}: {e}")
+
+async def auto_report_scheduler():
+    while True:
+        now_dt = datetime.now(MSK_TZ)
+        next_hour = (now_dt + timedelta(hours=1)).replace(minute=55, second=0, microsecond=0)
+        if now_dt.minute >= 55:
+            next_hour = (now_dt + timedelta(hours=1)).replace(minute=55, second=0, microsecond=0)
+            
+        sleep_seconds = (next_hour - now_dt).total_seconds()
+        logging.info(f"⏳ Следующий АвтоОтчёт запланирован на {next_hour.strftime('%d.%m.%Y %H:%M:%S')} MSK (через {int(sleep_seconds)} сек)")
+        
+        # Раз в 60 секунд между автоотчетами проверяем алерты
+        check_interval = 60
+        elapsed = 0
+        while elapsed < sleep_seconds:
+            await asyncio.sleep(check_interval)
+            elapsed += check_interval
+            await check_user_alerts()
+
+        # Запуск часового автоотчета
+        try:
+            class DummyMessage:
+                def __init__(self, bot, chat_id):
+                    self.bot = bot
+                    self.chat_id = chat_id
+                async def answer(self, text, parse_mode=None, reply_markup=None):
+                    return await self.bot.send_message(chat_id=self.chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup, disable_notification=False)
+
+            dummy_msg = DummyMessage(bot, USER_ID)
+            await run_scan(dummy_msg, interval="all", is_auto=True)
+        except Exception as e:
+            logging.error(f"Ошибка автоотчета: {e}")
 
 async def main():
-    init_db()
-    register_custom_handlers(dp, bot)
-    
-    asyncio.create_task(timer_checker_loop(bot))
-    asyncio.create_task(run_auto_schedule())
-    
-    logging.info("Бот успешно запущен!")
+    logging.info("Бот успешно запущен с обновленной системой алертов!")
+    asyncio.create_task(auto_report_scheduler())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
