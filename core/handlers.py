@@ -2,12 +2,14 @@ import logging
 import datetime
 import pandas as pd
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ContentType
 from aiogram.filters import Command
 
 from core.database import delete_alert, get_all_alerts, clear_all_alerts
 from core.ai_handler import process_ai_message, format_alerts_table, clean_symbol
 from core.bingx import fetch_bingx_candles
+from core.patterns import analyze_patterns
+from core.stt import transcribe_voice
 
 router = Router()
 
@@ -28,73 +30,45 @@ def build_compact_keyboard(buttons, row_width=4):
         keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def analyze_bar_patterns(df):
-    """
-    Анализ паттернов, SMA, направления и Сквот-бара
-    """
-    if len(df) < 21:
-        return "-", "🟡", ""
-
-    # Берем последнюю закрытую свечу (df.iloc[-2]) и предыдущие
-    c1 = df.iloc[-2] # Закрытый бар
-    c2 = df.iloc[-3] # Преддыдущий
+def calculate_bar_close_time(ts_ms: float, tf: str) -> str:
+    """Вычисляет точное время ЗАКРЫТИЯ свечи по ее метке времени открытия"""
+    if ts_ms <= 0:
+        return "12:00"
+    dt_open = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc) + datetime.timedelta(hours=3)
     
-    close_p = float(c1["close"])
-    high_p = float(c1["high"])
-    low_p = float(c1["low"])
-    open_p = float(c1["open"])
-    vol_p = float(c1.get("volume", 0))
+    if tf == "15m":
+        dt_close = dt_open + datetime.timedelta(minutes=15)
+    elif tf == "1h":
+        dt_close = dt_open + datetime.timedelta(hours=1)
+    elif tf == "4h":
+        dt_close = dt_open + datetime.timedelta(hours=4)
+    elif tf in ["1d", "1w"]:
+        dt_close = dt_open + datetime.timedelta(days=1)
+    else:
+        dt_close = dt_open
+        
+    return dt_close.strftime("%H:%M")
 
-    # SMA 20
-    sma20 = df["close"].astype(float).tail(21).iloc[:-1].mean()
-    direction = "🟡" if close_p >= sma20 else "🔴"
-
-    # Динамика диапазонов
-    r1 = high_p - low_p
-    r2 = float(c2["high"]) - float(c2["low"])
-    body = abs(close_p - open_p)
-
-    pats = []
+async def run_scan(message: Message, interval: str = "all", is_auto: bool = False):
+    now_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+    now_str = now_dt.strftime("%d.%m.%2y %H:%M")
     
-    # ППР / Overlap / Breakout
-    if close_p > float(c2["high"]):
-        pats.append("PPR")
-    elif close_p < float(c2["low"]):
-        pats.append("PPR")
+    if is_auto:
+        title_name = f"АвтоОтчёт на {now_str} МСК"
+        status_text = f"🔍 Запускаю автоотчет ({now_str} МСК)..."
+    else:
+        tf_title = "Все ТФ" if interval == "all" else interval
+        title_name = f"Сканирование {tf_title} ({now_str} МСК)"
+        status_text = f"🔍 Запускаю сканирование {tf_title}..."
 
-    # Сжатие (Inside Bar) / Расширение (Outside Bar)
-    if high_p < float(c2["high"]) and low_p > float(c2["low"]):
-        pats.append("Ins")
-    elif high_p > float(c2["high"]) and low_p < float(c2["low"]):
-        pats.append("Out")
-
-    # Pinsky / Fakey
-    if body > 0 and (r1 / body) > 2.5:
-        pats.append("Pin")
-
-    pat_str = "/".join(pats) if pats else "-"
-
-    # Сквот бар (Squat): Высокий объем при маленьком диапазоне свечи
-    avg_vol = df["volume"].astype(float).tail(10).mean() if "volume" in df else 1
-    is_squat = False
-    if r1 > 0 and avg_vol > 0:
-        eff = vol_p / r1
-        if vol_p > avg_vol * 1.1 and r1 < r2 * 0.8:
-            is_squat = True
-
-    state_str = "🟦" if is_squat else ""
-
-    return pat_str, direction, state_str
-
-async def run_scan(message: Message, interval: str = "all"):
-    now_str = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)).strftime("%d.%m.%2y %H:%M")
-    await message.answer(f"🔍 Запускаю автоотчет ({now_str} МСК)...")
+    # Отправляем временное статусное сообщение
+    status_msg = await message.answer(status_text)
 
     timeframes = ["1h", "4h", "1d"] if interval == "all" else [interval]
     rows = []
 
     for sym in SCAN_SYMBOLS:
-        clean_name = sym.replace("-USDT", "").replace("SILVER", "XAG").replace("PAXG", "XAU")[:3]
+        clean_name = sym.replace("-USDT", "").replace("SILVER", "XAG").replace("PAXG", "XAU")[:4]
         
         for tf in timeframes:
             try:
@@ -105,14 +79,12 @@ async def run_scan(message: Message, interval: str = "all"):
                 df = pd.DataFrame(klines)
                 last_closed = df.iloc[-2]
                 
-                # Время закрытия
+                # Получаем точное время ЗАКРЫТИЯ свечи
                 ts = float(last_closed.get("time", last_closed.get("timestamp", 0)))
-                dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc) + datetime.timedelta(hours=3)
-                time_str = dt.strftime("%H:%M")
+                time_str = calculate_bar_close_time(ts, tf)
 
-                pat, dir_icon, state_icon = analyze_bar_patterns(df)
+                pat, dir_icon, state_icon = analyze_patterns(df)
 
-                # Добавляем в список только при наличии паттерна или сквота (для чистоты) или для общих ТФ
                 rows.append({
                     "act": clean_name,
                     "time": time_str,
@@ -122,13 +94,13 @@ async def run_scan(message: Message, interval: str = "all"):
                     "state": state_icon
                 })
             except Exception as e:
-                logging.error(f"Ошибка автоотчета {sym} {tf}: {e}")
+                logging.error(f"Ошибка сканирования {sym} {tf}: {e}")
 
     if not rows:
-        await message.answer("⚠️ Не удалось сформировать отчет.")
+        await status_msg.edit_text("⚠️ Не удалось сформировать отчет.")
         return
 
-    table_text = f"📊 <b>Автоотчет на {now_str} МСК:</b>\n\n<pre>"
+    table_text = f"📊 <b>{title_name}:</b>\n\n<pre>"
     table_text += f"{'АКТ':<4} | {'ВРЕМЯ':<5} | {'ТФ':<3} | {'НАПР'} | {'ПАТ':<7} | {'СОСТ'}\n"
     table_text += "-" * 38 + "\n"
 
@@ -136,7 +108,9 @@ async def run_scan(message: Message, interval: str = "all"):
         table_text += f"{r['act']:<4} | {r['time']:<5} | {r['tf']:<3} |  {r['dir']}   | {r['pat']:<7} | {r['state']}\n"
 
     table_text += "</pre>"
-    await message.answer(table_text)
+    
+    # Редактируем временное сообщение, чтобы оно не оставалось висеть!
+    await status_msg.edit_text(table_text)
 
 @router.message(Command("alerts"))
 async def cmd_alerts(message: Message):
@@ -150,19 +124,19 @@ async def cmd_del_all(message: Message):
     await message.answer("🗑 Все активные алерты успешно удалены!")
 
 @router.message(Command("scan"))
-async def cmd_scan_all(message: Message): await run_scan(message, "all")
+async def cmd_scan_all(message: Message): await run_scan(message, "all", is_auto=False)
 
 @router.message(Command("scan_1h"))
-async def cmd_scan_1h(message: Message): await run_scan(message, "1h")
+async def cmd_scan_1h(message: Message): await run_scan(message, "1h", is_auto=False)
 
 @router.message(Command("scan_4h"))
-async def cmd_scan_4h(message: Message): await run_scan(message, "4h")
+async def cmd_scan_4h(message: Message): await run_scan(message, "4h", is_auto=False)
 
 @router.message(Command("scan_1d"))
-async def cmd_scan_1d(message: Message): await run_scan(message, "1d")
+async def cmd_scan_1d(message: Message): await run_scan(message, "1d", is_auto=False)
 
 @router.message(Command("scan_1w"))
-async def cmd_scan_1w(message: Message): await run_scan(message, "1w")
+async def cmd_scan_1w(message: Message): await run_scan(message, "1w", is_auto=False)
 
 @router.callback_query(F.data.startswith("del_alert_"))
 async def process_del_alert(callback: CallbackQuery):
@@ -177,6 +151,34 @@ async def process_del_alert(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=keyboard)
     except Exception:
         pass
+
+# Обработка голосовых сообщений
+@router.message(F.content_type == ContentType.VOICE)
+async def handle_voice_message(message: Message):
+    status_msg = await message.answer("🎙 Расшифровываю голос...")
+    try:
+        file_info = await message.bot.get_file(message.voice.file_id)
+        voice_bytes = await message.bot.download_file(file_info.file_path)
+        
+        text = await transcribe_voice(voice_bytes.read())
+        if not text:
+            await status_msg.edit_text("❌ Не удалось распознать голос.")
+            return
+            
+        await status_msg.edit_text(f"🗣 <i>«{text}»</i>")
+        
+        res = await process_ai_message(text, message.chat.id)
+        if res.get("type") == "alert_created":
+            alerts = res.get("alerts", [])
+            msg = "✅ <b>Созданы алерты:</b>\n"
+            for a in alerts:
+                msg += f"• #{a['id']} <b>{a['symbol']}</b> на уровне <code>{a['price']}</code> ({a['note']})\n"
+            await message.answer(msg)
+        else:
+            await message.answer(res.get("text", "Принято."))
+    except Exception as e:
+        logging.error(f"Ошибка голосового ввода: {e}")
+        await status_msg.edit_text("❌ Ошибка при обработке голосового сообщения.")
 
 @router.message()
 async def handle_all_messages(message: Message):

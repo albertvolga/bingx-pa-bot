@@ -6,21 +6,28 @@ from core.database import add_alert, get_all_alerts, delete_alert
 from core.bingx import fetch_bingx_candles
 
 SYMBOL_MAP = {
-    "XAG": "SILVER", "SILVER": "SILVER", "СЕРЕБРО": "SILVER", "СЕРЕБРУ": "SILVER",
-    "XAU": "PAXG", "GOLD": "PAXG", "ЗОЛОТО": "PAXG", "ЗОЛОТУ": "PAXG",
-    "SOL": "SOL", "СОЛАНА": "SOL", "СОЛАНЕ": "SOL", "СОЛАНУ": "SOL",
-    "ETH": "ETH", "ЭФИР": "ETH", "ЭФИРУ": "ETH", "ЭФИРЕ": "ETH",
+    # Драгметаллы и товары
+    "SILVER": "SILVER", "XAG": "SILVER", "СЕРЕБРО": "SILVER", "СЕРЕБРУ": "SILVER", "СЕРЕБРА": "SILVER",
+    "PAXG": "PAXG", "XAU": "PAXG", "GOLD": "PAXG", "ЗОЛОТО": "PAXG", "ЗОЛОТУ": "PAXG", "ЗОЛОТА": "PAXG",
+    "NATURALGAS": "NATURALGAS", "NG": "NATURALGAS", "ГАЗ": "NATURALGAS", "ГАЗА": "NATURALGAS",
+    "OILBRENT": "OILBRENT", "BRENT": "OILBRENT", "OIL": "OILBRENT", "НЕФТЬ": "OILBRENT", "НЕФТИ": "OILBRENT",
+
+    # Криптовалюты
+    "KAS": "KAS", "КАСПА": "KAS", "КАССПА": "KAS", "КАСПУ": "KAS",
+    "ATOM": "ATOM", "АТОМ": "ATOM", "КОСМОС": "ATOM",
+    "XMR": "XMR", "МОНЕРО": "XMR", "МОНЕЙРО": "XMR",
     "DOGE": "DOGE", "ДОДЖ": "DOGE", "ДОДЖУ": "DOGE", "ДОГИ": "DOGE",
+    "ADA": "ADA", "КАРДАНО": "ADA", "АДА": "ADA", "АДУ": "ADA",
+    "LTC": "LTC", "ЛАЙТКОИН": "LTC", "ЛАЙТКОЙН": "LTC", "ЛАЙТ": "LTC", "ЛАЙТА": "LTC",
+    "SOL": "SOL", "СОЛАНА": "SOL", "СОЛАНЕ": "SOL", "СОЛАНУ": "SOL", "СОЛ": "SOL",
+    "ETH": "ETH", "ЭФИР": "ETH", "ЭФИРУ": "ETH", "ЭФИРЕ": "ETH", "ЭФИРИУМ": "ETH",
     "BTC": "BTC", "БИТКОИН": "BTC", "БИТКОИНУ": "BTC", "БИТОК": "BTC", "БИТКУ": "BTC",
-    "XRP": "XRP", "РИПЛ": "XRP", "РИППЛ": "XRP",
-    "DOT": "DOT", "ПОЛКАДОТ": "DOT", "ДОТ": "DOT", "ДОТУ": "DOT",
-    "TON": "TON", "ТОН": "TON", "TONCOIN": "TON",
-    "ADA": "ADA", "КАРДАНО": "ADA", "АДА": "ADA",
-    "LINK": "LINK", "ЛИНК": "LINK"
+    "XRP": "XRP", "РИПЛ": "XRP", "РИППЛ": "XRP", "РИПЛА": "XRP",
+    "DOT": "DOT", "ПОЛКАДОТ": "DOT", "ДОТ": "DOT", "ДОТУ": "DOT"
 }
 
 def clean_symbol(symbol: str) -> str:
-    sym = symbol.upper().replace("-USDT", "").replace("USDT", "")
+    sym = symbol.upper().replace("-USDT", "").replace(".P", "").replace(".F", "").replace("USDT", "")
     return SYMBOL_MAP.get(sym, sym)
 
 def extract_symbol_from_text(text: str) -> str:
@@ -29,7 +36,7 @@ def extract_symbol_from_text(text: str) -> str:
     for w in words:
         if w in SYMBOL_MAP:
             return SYMBOL_MAP[w]
-    return "BTC"
+    return None  # Больше никакого фолбэка на BTC!
 
 def parse_timeframe_and_offset(text: str):
     t_lower = text.lower()
@@ -72,7 +79,6 @@ def format_alerts_table(chat_id: int = None, alerts_list=None):
             aid, sym, price, note = a[0], a[2], a[3], a[4] if len(a) > 4 else ""
             
         text += f"#{aid:<3} | {sym:<6} | {price:<10.2f} | {note}\n"
-        # Короткий текст для мини-кнопки
         buttons.append({"text": f"❌ #{aid}", "callback_data": f"del_alert_{aid}"})
     
     text += "</pre>"
@@ -85,10 +91,25 @@ async def timer_checker_loop(bot=None):
 async def process_ai_message(text: str, chat_id: int) -> dict:
     parsed = parse_user_intent(text)
     
-    if parsed.get("type") == "alert" or any(k in text.lower() for k in ["алерт", "поставь", "уровень"]):
+    if parsed.get("type") == "alert" or any(k in text.lower() for k in ["алерт", "поставь", "уровень", "уведомление", "напоминание"]):
         symbol_short = extract_symbol_from_text(text)
+        
+        if not symbol_short:
+            return {"type": "chat", "text": "❌ <b>Не удалось определить монету.</b> Уточните название актива (например, <i>KAS, Солана, Лайткоин</i>)."}
+
         bingx_symbol = f"{symbol_short}-USDT"
         
+        target_price = parsed.get("target_price")
+        added_alerts = []
+
+        # Вариант 1: Точная цена
+        if target_price is not None and parsed.get("level_type") == "exact":
+            note = "Уровень пользователя"
+            aid = add_alert(chat_id=chat_id, symbol=symbol_short, target_price=target_price, note=note)
+            added_alerts.append({"id": aid, "symbol": symbol_short, "price": target_price, "note": note})
+            return {"type": "alert_created", "alerts": added_alerts}
+
+        # Вариант 2: Расчет по свечам (High / Low / High+Low)
         tf, candle_offset = parse_timeframe_and_offset(text)
         
         t_lower = text.lower()
@@ -108,7 +129,6 @@ async def process_ai_message(text: str, chat_id: int) -> dict:
         target_candle = klines[candle_offset]
         c_high = float(target_candle["high"])
         c_low = float(target_candle["low"])
-        c_close = float(target_candle["close"])
         
         timestamp_ms = float(target_candle.get("time", target_candle.get("timestamp", 0)))
         if timestamp_ms > 0:
@@ -118,7 +138,6 @@ async def process_ai_message(text: str, chat_id: int) -> dict:
             time_str = "свеча"
 
         tf_label = tf.upper()
-        added_alerts = []
 
         if level_type == "prev_candle_high_low":
             desc_h = f"High {tf_label} ({time_str})"

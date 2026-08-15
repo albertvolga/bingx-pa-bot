@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+import pandas as pd
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -14,7 +15,7 @@ from core.patterns import analyze_patterns
 from core.formatter import format_table_report
 
 MSK_TZ = timezone(timedelta(hours=3))
-MY_CHAT_ID = 8976473612  # Ваш ID
+MY_CHAT_ID = 8029964519  # Твой личный Telegram ID
 
 TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0}
 
@@ -70,8 +71,9 @@ async def run_auto_schedule():
         for tf in timeframes:
             for coin in coins:
                 try:
-                    df = await fetch_klines(coin, tf, limit=30)
-                    if df is not None:
+                    klines = await fetch_klines(coin, tf, limit=30)
+                    if klines:
+                        df = pd.DataFrame(klines)
                         pats = analyze_patterns(df)
                         if pats:
                             curr = df.iloc[-1]
@@ -86,7 +88,7 @@ async def run_auto_schedule():
                 except Exception as e:
                     logging.error(f"Ошибка получения {coin} {tf}: {e}")
                     
-        # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшему
+        # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшим
         all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
         
         title = f"📊 АвтоОтчёт ({run_dt.strftime('%d.%m.%Y %H:%M')})"
@@ -98,6 +100,7 @@ async def run_auto_schedule():
             
         try:
             await bot.send_message(chat_id=MY_CHAT_ID, text=report_text, parse_mode="HTML")
+            logging.info(f"✅ АвтоОтчёт успешно отправлен пользователю {MY_CHAT_ID}")
         except Exception as err:
             logging.error(f"❌ Ошибка отправки АвтоОтчёта: {err}")
 
