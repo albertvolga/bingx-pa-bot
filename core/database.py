@@ -23,7 +23,6 @@ def init_db():
     """)
     conn.commit()
     
-    # Проверяем, есть ли колонка note (на случай старой базы)
     cursor.execute("PRAGMA table_info(alerts)")
     columns = [col["name"] for col in cursor.fetchall()]
     if "note" not in columns:
@@ -78,13 +77,4 @@ def clear_all_alerts(chat_id: int = None):
 def clear_user_alerts(chat_id: int):
     clear_all_alerts(chat_id)
 
-# Инициализируем БД при импорте
 init_db()
-
-def clear_all_alerts(chat_id: int):
-    """Удаление всех алертов для чата"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM alerts WHERE chat_id = ?", (chat_id,))
-    conn.commit()
-    conn.close()

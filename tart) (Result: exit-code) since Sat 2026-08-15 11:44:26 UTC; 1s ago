@@ -1,0 +1,10 @@
+● bingx-bot.service - BingX Price Action Telegram Bot
+     Loaded: loaded (]8;;file://comprehensive-apricot-camel.play2go.cloud/etc/systemd/system/bingx-bot.service\/etc/systemd/system/bingx-bot.service]8;;\; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: activating (auto-restart) (Result: exit-code) since Sat 2026-08-15 11:44:26 UTC; 1s ago
+ Invocation: 3973209f0285486a9b64dc367ea61211
+    Process: 31587 ExecStart=/root/bingx-pa-bot/.venv/bin/python main.py [0;1;31m(code=exited, status=1/FAILURE)[0m
+   Main PID: 31587 (code=exited, status=1/FAILURE)
+   Mem peak: 738.4M
+        CPU: 6.318s
+
+Aug 15 11:44:26 comprehensive-apricot-camel.play2go.cloud systemd[1]: [0;1;39m[0;1;31m[0;1;39mbingx-bot.service: Consumed 6.318s CPU time over 6.242s wall clock time, 738.4M memory peak.[0m

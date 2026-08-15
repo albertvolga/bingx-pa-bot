@@ -46,10 +46,23 @@ async def start_scheduler(bot, chat_id: int):
     while True:
         now = datetime.now(MSK_TZ)
         if now.minute == 55:
+            # Каждый час в :55 отправляем 1h
             await scan_and_notify(bot, chat_id, target_tf="1h")
-            if now.hour % 4 == 3:
+            
+            # 4h свечи закрываются в 03:00, 07:00, 11:00, 15:00, 19:00, 23:00 MSK
+            # В :55 отчёт уходит в 02:55, 06:55, 10:55, 14:55, 18:55, 22:55
+            if now.hour in (2, 6, 10, 14, 18, 22):
                 await scan_and_notify(bot, chat_id, target_tf="4h")
-            if now.hour == 3:
+            
+            # Дневная свеча закрывается в 03:00 MSK -> отчёт в 02:55 MSK
+            if now.hour == 2:
                 await scan_and_notify(bot, chat_id, target_tf="1d")
+                
+                # Недельный отчёт: воскресенье (weekday == 6) в 02:55 MSK (перед закрытием недели в 03:00 ПН)
+                if now.weekday() == 6:
+                    await scan_and_notify(bot, chat_id, target_tf="1w")
+            
+            # Спим 60 секунд, чтобы исключить повторное срабатывание в течение той же 55-й минуты
             await asyncio.sleep(60)
+        
         await asyncio.sleep(20)

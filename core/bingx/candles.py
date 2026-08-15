@@ -3,10 +3,7 @@ import asyncio
 
 BINGX_BASE_URL = "https://open-api.bingx.com"
 
-async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
-    """
-    Получение свечей BingX (поддерживает аргументы timeframe и interval)
-    """
+async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 30, interval: str = None, end_time: int = None):
     tf = interval or timeframe or "1h"
     tf_map = {
         "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
@@ -18,7 +15,6 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
     if not sym.endswith("-USDT"):
         sym = f"{sym}-USDT"
 
-    # Пробуем сначала Swap API, при ошибке контракта — Spot API
     urls = [
         f"{BINGX_BASE_URL}/openApi/swap/v2/quote/klines",
         f"{BINGX_BASE_URL}/openApi/spot/v1/market/kline"
@@ -30,17 +26,19 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
             "interval": tf_val,
             "limit": limit
         }
+        if end_time:
+            params["endTime"] = end_time
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=10) as resp:
                     data = await resp.json()
                     if data.get("code") == 0 and "data" in data:
                         raw_klines = data["data"]
-                        # Приводим к единому формату time/high/low/close
                         klines = []
                         for k in raw_klines:
                             klines.append({
-                                "time": k.get("time") or k.get("time"),
+                                "time": int(k.get("time")),
                                 "high": float(k.get("high")),
                                 "low": float(k.get("low")),
                                 "close": float(k.get("close")),
@@ -53,8 +51,8 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
     print(f"⚠️ BingX API: Не удалось загрузить свечи для {sym}")
     return []
 
-async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
-    return await fetch_bingx_candles(symbol, timeframe=timeframe, limit=limit, interval=interval)
+async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 30, interval: str = None, end_time: int = None):
+    return await fetch_bingx_candles(symbol, timeframe=timeframe, limit=limit, interval=interval, end_time=end_time)
 
 async def get_ticker_price(symbol: str) -> float:
     sym = symbol.upper()
