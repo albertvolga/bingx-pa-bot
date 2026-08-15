@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 import pandas as pd
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject
@@ -25,95 +26,39 @@ HELP_TEXT = """
 • /help — Справка
 """
 
-def parse_historical_datetime(args_str: str) -> datetime.datetime:
-    if not args_str or not args_str.strip():
-        return None
-    clean_str = args_str.strip()
-    now_msk = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
-    formats = [("%d %H:%M", "day"), ("%d.%m %H:%M", "day_month"), ("%d.%m.%y %H:%M", "full_short"), ("%d.%m.%Y %H:%M", "full_long")]
-    for fmt, mode in formats:
-        try:
-            dt = datetime.datetime.strptime(clean_str, fmt)
-            if mode == "day":
-                dt = dt.replace(year=now_msk.year, month=now_msk.month)
-            elif mode == "day_month":
-                dt = dt.replace(year=now_msk.year)
-            msk_tz = datetime.timezone(datetime.timedelta(hours=3))
-            return dt.replace(tzinfo=msk_tz)
-        except ValueError:
-            continue
-    return None
-
-async def run_scan(message: Message, interval: str = "all", is_auto: bool = False, target_dt: datetime.datetime = None):
-    now_dt = target_dt if target_dt else (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3))
-    now_str = now_dt.strftime("%d.%m.%y %H:%M")
+def parse_alert_intent(text: str):
+    """Парсит произвольный текст или расшифрованный голос для создания алерта"""
+    text_clean = text.lower()
     
-    tf_title = "Все ТФ" if interval == "all" else interval
-    if target_dt:
-        title_name = f"Сканирование {tf_title} ({now_str} МСК)"
-        status_text = f"🔍 Сканирую историю на {now_str} МСК ({tf_title})..."
-    elif is_auto:
-        title_name = f"АвтоОтчёт ({now_str} МСК)"
-        status_text = f"🔍 Запускаю автоотчет ({now_str} МСК)..."
-    else:
-        title_name = f"Сканирование {tf_title} ({now_str} МСК)"
-        status_text = f"🔍 Запускаю сканирование {tf_title}..."
-
-    status_msg = await message.answer(status_text)
-    timeframes = ["1h", "4h", "1d"] if interval == "all" else [interval]
-    all_signals = []
-    fetch_limit = 1000 if target_dt else 30
-
-    for sym in SCAN_SYMBOLS:
-        for tf in timeframes:
-            try:
-                klines = await fetch_klines(sym, interval=tf, limit=fetch_limit)
-                if not klines or len(klines) < 3:
-                    continue
-
-                df = pd.DataFrame(klines)
-                df['time'] = pd.to_numeric(df['time'], errors='coerce')
-                df.loc[df['time'] < 10000000000, 'time'] *= 1000
-
-                if target_dt:
-                    target_ts_ms = int(target_dt.timestamp() * 1000)
-                    tf_lower = tf.lower()
-                    if tf_lower == "1h":
-                        max_open_ts = target_ts_ms - (3600 * 1000)
-                    elif tf_lower == "4h":
-                        max_open_ts = target_ts_ms - (4 * 3600 * 1000)
-                    elif tf_lower in ["1d", "d1"]:
-                        max_open_ts = target_ts_ms - (24 * 3600 * 1000)
-                    else:
-                        max_open_ts = target_ts_ms
-                    df = df[df['time'] <= max_open_ts]
-
-                if len(df) < 3:
-                    continue
-
-                pats = analyze_patterns(df)
-                curr = df.iloc[-1]
-                bar_time = int(curr.get('time'))
-                direction = "bull" if curr['close'] >= curr['open'] else "bear"
-
-                for p in pats:
-                    all_signals.append({
-                        "symbol": sym,
-                        "tf": tf,
-                        "pattern": p,
-                        "direction": direction,
-                        "bar_time": bar_time,
-                        "is_forming": False
-                    })
-            except Exception as e:
-                logging.error(f"Ошибка при сканировании {sym} ({tf}): {e}")
-
-    report_text = format_table_report(all_signals, report_title=title_name, now_dt=now_dt, tf_type=interval)
-    await status_msg.delete()
-    if all_signals:
-        await message.answer(report_text, parse_mode="HTML")
-    else:
-        await message.answer(f"📊 <b>{title_name}</b>\nПаттерны не обнаружены.")
+    # Ищем символ (BTC, ETH, SOL и т.д.)
+    sym = "BTC"
+    for s in SCAN_SYMBOLS:
+        clean_s = s.replace("-USDT", "").replace("USDT", "").lower()
+        if clean_s in text_clean:
+            sym = clean_s.upper()
+            break
+            
+    # Ищем таймфрейм
+    tf = "1h"
+    if "4h" in text_clean or "4ч" in text_clean or "4 часа" in text_clean:
+        tf = "4h"
+    elif "1d" in text_clean or "1д" in text_clean or "днев" in text_clean:
+        tf = "1d"
+    elif "15m" in text_clean or "15м" in text_clean or "15 мин" in text_clean:
+        tf = "15m"
+        
+    # Ищем паттерн
+    pat = "PIN"
+    if "out" in text_clean or "внешн" in text_clean:
+        pat = "OUT"
+    elif "ins" in text_clean or "внутр" in text_clean:
+        pat = "INS"
+    elif "ppr" in text_clean:
+        pat = "PPR"
+    elif "fak" in text_clean or "ложн" in text_clean:
+        pat = "FAK"
+        
+    return sym, tf, pat
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -121,8 +66,8 @@ async def cmd_help(message: Message):
 
 @router.message(Command("scan"))
 async def cmd_scan_all(message: Message, command: CommandObject):
-    target_dt = parse_historical_datetime(command.args)
-    await run_scan(message, "all", is_auto=False, target_dt=target_dt)
+    from core.handlers import run_scan
+    await run_scan(message, "all", is_auto=False)
 
 @router.message(Command("alert"))
 async def cmd_add_alert(message: Message, command: CommandObject):
@@ -184,11 +129,31 @@ async def handle_voice_message(message: Message):
         if not text:
             await status_msg.edit_text("❌ Не удалось распознать голос.")
             return
-        await status_msg.edit_text(f"🗣 <i>«{text}»</i>")
+            
+        sym, tf, pat = parse_alert_intent(text)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="1️⃣ Одноразовый", callback_data=f"addalt_0_{sym}_{tf}_{pat}"),
+            InlineKeyboardButton(text="🔄 Многоразовый", callback_data=f"addalt_1_{sym}_{tf}_{pat}")
+        ]])
+        await status_msg.edit_text(
+            f"🗣 <i>«{text}»</i>\n\n🔔 Найдена команда алерта: <b>{sym} ({tf.upper()}) - {pat}</b>. Выберите тип:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
     except Exception as e:
         logging.error(f"Ошибка распознавания голоса: {e}")
         await status_msg.edit_text("❌ Произошла ошибка при распознавании речи.")
 
-def register_custom_handlers(dp, bot=None):
-    if 'router' in globals():
-        dp.include_router(router)
+@router.message(F.text & ~F.text.startswith("/"))
+async def handle_text_message(message: Message):
+    if "алерт" in message.text.lower() or "уведомлен" in message.text.lower() or "постав" in message.text.lower():
+        sym, tf, pat = parse_alert_intent(message.text)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="1️⃣ Одноразовый", callback_data=f"addalt_0_{sym}_{tf}_{pat}"),
+            InlineKeyboardButton(text="🔄 Многоразовый", callback_data=f"addalt_1_{sym}_{tf}_{pat}")
+        ]])
+        await message.answer(
+            f"🔔 Найдена команда алерта: <b>{sym} ({tf.upper()}) - {pat}</b>. Выберите тип:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
