@@ -19,43 +19,93 @@ HELP_TEXT = """
 
 <b>Основные команды:</b>
 • /scan — Полное сканирование всех ТФ (1H, 4H, 1D)
-• /scan [дата время] — Исторический срез (напр: <code>/scan 10.08 19:00</code>)
 • /alert [СИМВОЛ] [ТФ] [ПАТТЕРН] — Установить алерт (напр: <code>/alert BTC 1h Pin</code>)
 • /alerts — Посмотреть и удалить мои алерты
 • /del_all — Очистка всех моих алертов
 • /help — Справка
 """
 
+# Словарь синонимов монет
+SYMBOL_ALIASES = {
+    "BTC": ["btc", "биткоин", "биток", "btc usdt"],
+    "ETH": ["eth", "эфир", "эфириум", "кефир", "eth usdt"],
+    "SOL": ["sol", "солана", "соляна", "sol usdt"],
+    "XRP": ["xrp", "рипл", "риппл", "хрп"],
+    "BNB": ["bnb", "бнб", "бинанс"],
+    "DOGE": ["doge", "доги", "доге", "собаки"],
+    "ADA": ["ada", "ада", "кардано"]
+}
+
+async def run_scan(message, interval="all", is_auto=False):
+    """Выполняет сканирование рынка и отправляет отчет"""
+    try:
+        title_prefix = "АвтоОтчёт" if is_auto else "Сканирование Все ТФ"
+        now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M MSK")
+        
+        results = []
+        for symbol in SCAN_SYMBOLS:
+            tf_list = ["1h", "4h", "1d"] if interval == "all" else [interval]
+            for tf in tf_list:
+                klines = await fetch_klines(symbol, interval=tf, limit=10)
+                if klines and len(klines) >= 3:
+                    df = pd.DataFrame(klines)
+                    pats = analyze_patterns(df)
+                    if pats:
+                        results.append({
+                            "symbol": symbol.replace("-USDT", "").replace("USDT", ""),
+                            "time": datetime.datetime.now().strftime("%H:00"),
+                            "tf": tf,
+                            "patterns": pats
+                        })
+        
+        text = format_table_report(results, f"{title_prefix} ({now_str})")
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка в run_scan: {e}")
+        if not is_auto:
+            await message.answer("❌ Произошла ошибка при сканировании рынка.")
+
 def parse_alert_intent(text: str):
-    """Парсит произвольный текст или расшифрованный голос для создания алерта"""
+    """Парсит текст или голос с учетом синонимов монет и ТФ"""
     text_clean = text.lower()
     
-    # Ищем символ (BTC, ETH, SOL и т.д.)
+    # 1. Поиск инструмента (Symbol)
     sym = "BTC"
-    for s in SCAN_SYMBOLS:
-        clean_s = s.replace("-USDT", "").replace("USDT", "").lower()
-        if clean_s in text_clean:
-            sym = clean_s.upper()
+    found_sym = False
+    for ticker, aliases in SYMBOL_ALIASES.items():
+        for alias in aliases:
+            if alias in text_clean:
+                sym = ticker
+                found_sym = True
+                break
+        if found_sym:
             break
             
-    # Ищем таймфрейм
+    if not found_sym:
+        for s in SCAN_SYMBOLS:
+            clean_s = s.replace("-USDT", "").replace("USDT", "").lower()
+            if clean_s in text_clean:
+                sym = clean_s.upper()
+                break
+            
+    # 2. Поиск таймфрейма (Timeframe)
     tf = "1h"
-    if "4h" in text_clean or "4ч" in text_clean or "4 часа" in text_clean:
+    if any(x in text_clean for x in ["4h", "4ч", "4 часа", "четырехчасовой", "4-часовой"]):
         tf = "4h"
-    elif "1d" in text_clean or "1д" in text_clean or "днев" in text_clean:
+    elif any(x in text_clean for x in ["1d", "1д", "дневной", "дневка", "1 день"]):
         tf = "1d"
-    elif "15m" in text_clean or "15м" in text_clean or "15 мин" in text_clean:
+    elif any(x in text_clean for x in ["15m", "15м", "15 мин", "пятнадцатиминутный"]):
         tf = "15m"
         
-    # Ищем паттерн
+    # 3. Поиск паттерна (Pattern)
     pat = "PIN"
-    if "out" in text_clean or "внешн" in text_clean:
+    if any(x in text_clean for x in ["out", "внешн", "поглощ"]):
         pat = "OUT"
-    elif "ins" in text_clean or "внутр" in text_clean:
+    elif any(x in text_clean for x in ["ins", "внутр", "inside"]):
         pat = "INS"
     elif "ppr" in text_clean:
         pat = "PPR"
-    elif "fak" in text_clean or "ложн" in text_clean:
+    elif any(x in text_clean for x in ["fak", "ложн", "фейки"]):
         pat = "FAK"
         
     return sym, tf, pat
@@ -66,7 +116,6 @@ async def cmd_help(message: Message):
 
 @router.message(Command("scan"))
 async def cmd_scan_all(message: Message, command: CommandObject):
-    from core.handlers import run_scan
     await run_scan(message, "all", is_auto=False)
 
 @router.message(Command("alert"))
@@ -146,7 +195,7 @@ async def handle_voice_message(message: Message):
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message):
-    if "алерт" in message.text.lower() or "уведомлен" in message.text.lower() or "постав" in message.text.lower():
+    if any(w in message.text.lower() for w in ["алерт", "уведомлен", "постав", "напомни", "сигнал"]):
         sym, tf, pat = parse_alert_intent(message.text)
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="1️⃣ Одноразовый", callback_data=f"addalt_0_{sym}_{tf}_{pat}"),
