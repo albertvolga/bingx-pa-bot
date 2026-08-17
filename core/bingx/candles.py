@@ -16,7 +16,7 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
     
     sym = symbol.upper()
     if not sym.endswith("-USDT"):
-        sym = f"{sym}-USDT"
+        sym = f"{sym.replace("-USDT", "").replace("USDT", "")}-USDT"
 
     # Пробуем сначала Swap API, при ошибке контракта — Spot API
     urls = [
@@ -59,7 +59,7 @@ async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, inte
 async def get_ticker_price(symbol: str) -> float:
     sym = symbol.upper()
     if not sym.endswith("-USDT"):
-        sym = f"{sym}-USDT"
+        sym = f"{sym.replace("-USDT", "").replace("USDT", "")}-USDT"
 
     urls = [
         (f"{BINGX_BASE_URL}/openApi/swap/v2/quote/price", {"symbol": sym}),
