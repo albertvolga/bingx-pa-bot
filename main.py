@@ -7,12 +7,12 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from config import TELEGRAM_BOT_TOKEN
-from core.database import init_db, get_connection, delete_alert
+from core.database import init_db, get_connection, delete_alert, update_alert_triggered_status, set_alert_recurring
 from core.ai_handler import clean_symbol
 from core.handlers import register_custom_handlers
 from core.fetcher import fetch_klines, get_ticker_price
 from core.bingx.candles import get_all_usdt_pairs # Новый импорт для получения всех пар
-from core.patterns import analyze_patterns
+from core.patterns import analyze_patterns # calculate_indicators_and_states # Пока без calculate_indicators_and_states
 from core.formatter import format_report # Обновленный импорт
 
 MSK_TZ = timezone(timedelta(hours=3))
@@ -31,7 +31,7 @@ async def check_price_alerts(bot: Bot):
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, chat_id, symbol, target_price, is_recurring, comment, condition, alert_type, created_at FROM alerts")
+                cursor.execute("SELECT id, chat_id, symbol, target_price, condition, alert_type, is_recurring, triggered_count, note, created_at FROM alerts")
                 alerts = cursor.fetchall()
 
                 for alert in alerts:
@@ -39,28 +39,25 @@ async def check_price_alerts(bot: Bot):
                     chat_id = alert['chat_id']
                     symbol = alert['symbol']
                     target_price = alert['target_price']
-                    comment = alert['comment']
+                    note = alert['note']
                     condition = alert['condition']
                     alert_type = alert['alert_type']
+                    is_recurring = bool(alert['is_recurring'])
+                    triggered_count = alert['triggered_count']
 
                     # Проверка таймера
                     if alert_type == "TIMER":
-                        # Если время таймера истекло, удаляем и отправляем уведомление
-                        # TODO: Реализовать логику таймера, сейчас это просто удаление.
-                        # Допустим, 'comment' содержит информацию о времени срабатывания для таймера
-                        # Сейчас просто удаляем и уведомляем
-                        
+                        # TODO: Реализовать логику таймера, сейчас это просто удаление
                         delete_alert(a_id)
                         await bot.send_message(
                             chat_id=chat_id, 
-                            text=f"⏰ <b>ВНИМАНИЕ! ТАЙМЕР СРАБОТАЛ!</b>\n{comment}", 
+                            text=f"⏰ <b>ВНИМАНИЕ! ТАЙМЕР СРАБОТАЛ!</b>\n{note}", 
                             parse_mode="HTML", 
                             disable_notification=False # ЗВУКОВОЙ СИГНАЛ!
                         )
                         continue
 
                     # Проверка ценовых алертов BingX
-                    # Используем get_ticker_price для быстрой проверки текущей цены
                     current_price = await get_ticker_price(symbol)
                     
                     if current_price == 0.0:
@@ -68,35 +65,54 @@ async def check_price_alerts(bot: Bot):
                         continue
 
                     triggered = False
-                    # Предполагается, что 'condition' может быть 'cross_above' или 'cross_below'
+                    # Логика срабатывания (condition)
                     if condition == "cross_above" and current_price >= target_price:
                         triggered = True
                     elif condition == "cross_below" and current_price <= target_price:
                         triggered = True
-                    # Если условие не задано (null), по умолчанию считаем "cross"
-                    elif condition is None:
-                        # Для алертов без явного условия, срабатываем при любом пересечении
-                        # То есть, если текущая цена была ниже, а стала выше, или наоборот
-                        # Это требует хранения предыдущей цены, что пока не реализовано в БД.
-                        # Для простоты, пока сработает на "точном" совпадении или первом пересечении.
-                        # В текущей реализации, без истории, это будет срабатывать как '>= target'
-                        # для первоначальной установки или если цена изменится.
-                        # Более точная логика пересечения потребует расширения БД.
-                        triggered = (current_price >= target_price) or (current_price <= target_price) # Простая заглушка
+                    elif condition == "cross": # Для условия "cross" срабатывает при любом пересечении
+                        # Эта логика требует хранения предыдущей цены, что пока не реализовано в БД.
+                        # Для простоты, пока сработает как ">= target" для первоначальной установки или если цена изменится.
+                        # Более точная логика пересечения потребует расширения БД или более частых проверок.
+                        # Пока срабатывает при достижении цели, как в случае cross_above/below,
+                        # но без учета "пересечения" как такового.
+                        triggered = (current_price >= target_price - 0.0001) and (current_price <= target_price + 0.0001) # Точное попадание
+                        # или более универсально: abs(current_price - target_price) < tolerance
+                        # Или просто current_price == target_price, но это рискованно с float.
+                        # Для реального "cross" нужно знать было ли раньше ниже/выше.
+                        # Пока упрощаем: если цена равна или "пересекла" цель
+                        # Для первого срабатывания можно использовать (current_price >= target_price and previous_price < target_price)
+                        # или (current_price <= target_price and previous_price > target_price)
+                        # Так как предыдущей цены нет, используем простую проверку на достижение.
+                        triggered = (current_price >= target_price if target_price > 0 else current_price <= target_price) # Простая заглушка
 
                     if triggered:
                         coin = clean_symbol(symbol)
                         msg = (
                             f"🚨 <b>АЛЕРТ СРАБОТАЛ!</b>\n\n"
                             f"📌 <b>Актив:</b> {coin}\n"
-                            f"🎯 <b>Целевой уровень:</b> `{target_price}`\n"
-                            f"📊 <b>Текущая цена:</b> `{current_price}`\n"
-                            f"📝 <b>Заметка:</b> {comment}"
+                            f"🎯 <b>Целевой уровень:</b> <code>{target_price:.2f}</code>\n"
+                            f"📊 <b>Текущая цена:</b> <code>{current_price:.2f}</code>\n"
+                            f"📝 <b>Примечание:</b> {note}"
                         )
+                        
+                        reply_markup = None
+                        if not is_recurring:
+                            # Для одноразовых алертов предлагаем сделать многоразовым
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🔁 Сделать многоразовым", callback_data=f"set_recurring_{a_id}")]
+                            ])
+                            reply_markup = keyboard
+                            
                         # Отправляем сообщение со СТРОГИМ ВКЛЮЧЕНИЕМ ЗВУКА
-                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML", disable_notification=False)
-                        delete_alert(a_id) # Удаляем сработавший алерт
-                        logging.info(f"Алерт {a_id} сработал для {symbol} на {current_price}")
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML", disable_notification=False, reply_markup=reply_markup)
+                        
+                        update_alert_triggered_status(a_id, increment_count=True) # Увеличиваем счетчик
+                        
+                        if not is_recurring:
+                            delete_alert(a_id, chat_id=chat_id) # Удаляем сработавший одноразовый алерт
+                        
+                        logging.info(f"Алерт {a_id} сработал для {symbol} на {current_price}. Многоразовый: {is_recurring}")
 
         except Exception as e:
             logging.error(f"Ошибка в цикле проверки алертов: {e}")
@@ -113,8 +129,6 @@ async def run_auto_schedule(bot: Bot):
         now_msk = datetime.now(MSK_TZ)
         
         # Определяем время следующего запуска (XX:55 каждой свечи)
-        # Если сейчас 17:54, следующий запуск будет в 17:55.
-        # Если сейчас 17:56, следующий запуск будет в 18:55.
         next_run = now_msk.replace(minute=55, second=0, microsecond=0)
         if now_msk.minute >= 55:
             next_run += timedelta(hours=1)
@@ -151,28 +165,26 @@ async def run_auto_schedule(bot: Bot):
         for tf in timeframes_to_scan:
             for coin_full in coins: # coin_full будет типа "BTC-USDT"
                 try:
-                    # Для автоотчета берем последние 5 свечей, чтобы многобарные паттерны могли быть найдены
-                    # analyze_patterns будет работать с этими 5 свечами
-                    klines_for_patterns = await fetch_klines(coin_full, tf, limit=5)
+                    # Для автоотчета берем достаточно свечей для анализа паттернов и индикаторов (BB480)
+                    limit_needed = 500 # Достаточно для BB(480) + паттерны
+                    klines_for_analysis = await fetch_klines(coin_full, tf, limit=limit_needed)
                     
-                    if klines_for_patterns:
-                        df_patterns = pd.DataFrame(klines_for_patterns)
+                    if klines_for_analysis and len(klines_for_analysis) >= 3: # Для анализа нужно мин 3
+                        df_patterns = pd.DataFrame(klines_for_analysis)
                         
-                        # analyze_patterns будет смотреть на df_patterns.iloc[-1] (формирующийся) или [-2], [-3] (закрытые)
-                        # для многобарных паттернов.
-                        # Если паттерн найден на текущем (формирующемся) баре, это то, что нужно.
-                        pats_found = analyze_patterns(df_patterns) 
+                        # analyze_patterns теперь возвращает dict с паттерном, direction_bb и state_emoji
+                        pat_data = analyze_patterns(df_patterns) 
                         
-                        if pats_found != "-": # Если паттерн найден
+                        if pat_data and pat_data["pattern"] != "-": 
                             # Определяем направление по текущему формирующемуся бару (последний в df_patterns)
                             curr_forming_candle = df_patterns.iloc[-1]
-                            direction = "bull" if curr_forming_candle['close'] >= curr_forming_candle['open'] else "bear"
                             
                             all_signals.append({
                                 "symbol": clean_symbol(coin_full),
                                 "tf": tf,
-                                "pattern": pats_found, # Теперь это строка с названием паттерна
-                                "direction": direction,
+                                "pattern": pat_data["pattern"], 
+                                "direction_bb": pat_data.get("direction_bb", '⚪⚪⚪'), # Из analyze_patterns
+                                "state_emoji": pat_data.get("state_emoji", ''), # Из analyze_patterns
                                 "is_auto": True, # Флаг для formatter
                                 "timestamp": curr_forming_candle['time'] # Добавляем timestamp для форматирования времени
                             })
@@ -180,7 +192,7 @@ async def run_auto_schedule(bot: Bot):
                     logging.error(f"Ошибка получения или анализа {coin_full} {tf}: {e}")
                     
         # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшим
-        # TF_PRIORITY определен в main.py, используется глобальный.
+        # TF_PRIORITY определен глобально
         all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
         
         # Используем обновленный format_report
@@ -188,7 +200,6 @@ async def run_auto_schedule(bot: Bot):
             
         try:
             # Отправляем админу/активному чату со ЗВУКОМ
-            # MY_CHAT_ID является обязательным для автоотчетов
             if MY_CHAT_ID:
                 await bot.send_message(chat_id=MY_CHAT_ID, text=report_text, parse_mode="HTML")
                 logging.info(f"✅ АвтоОтчёт успешно отправлен пользователю {MY_CHAT_ID}")
@@ -198,7 +209,7 @@ async def run_auto_schedule(bot: Bot):
             logging.error(f"❌ Ошибка отправки АвтоОтчёта: {err}")
 
 async def main():
-    init_db()
+    init_db() # Вызываем инициализацию БД здесь один раз
     register_custom_handlers(dp, bot)
     
     # Запускаем фоновые задачи

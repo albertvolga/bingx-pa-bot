@@ -3,9 +3,14 @@ import asyncio
 
 BINGX_BASE_URL = "https://open-api.bingx.com"
 
-async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
+async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None, end_time_ms: int = None):
     """
-    Получение свечей BingX (поддерживает аргументы timeframe и interval)
+    Получение свечей BingX (поддерживает аргументы timeframe, interval и end_time_ms для исторических данных)
+    :param symbol: Торговый символ (например, "BTC-USDT")
+    :param timeframe: Таймфрейм (например, "1h", "4h", "1d")
+    :param limit: Количество свечей для получения
+    :param interval: Альтернативное имя для timeframe (если используется)
+    :param end_time_ms: Timestamp в миллисекундах для конечной точки (исторические данные до этого времени)
     """
     tf = interval or timeframe or "1h"
     tf_map = {
@@ -30,6 +35,12 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
             "interval": tf_val,
             "limit": limit
         }
+        if end_time_ms:
+            params["endTime"] = end_time_ms # Добавляем параметр endTime
+            # Если указан endTime, то API возвращает свечи ЗАКОНЧИВШИЕСЯ ДО этого времени.
+            # Если мы хотим свечи "до" 11:00, то последняя будет закрыта в 10:00.
+            # Поэтому для limit=X, мы получим X свечей, последняя из которых закрыта до endTime.
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=10) as resp:
@@ -46,15 +57,18 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
                                 "close": float(k.get("close")),
                                 "open": float(k.get("open", 0))
                             })
+                        # API может вернуть не до конца отсортированные данные, сортируем по времени открытия
                         return sorted(klines, key=lambda x: x["time"])
-        except Exception:
+        except Exception as e:
+            # print(f"⚠️ BingX API: Ошибка при получении свечей для {sym} с {url}: {e}") # Отладочный вывод
             continue
 
-    print(f"⚠️ BingX API: Не удалось загрузить свечи для {sym}")
+    print(f"⚠️ BingX API: Не удалось загрузить свечи для {sym} (TF: {tf_val}, Limit: {limit}, EndTime: {end_time_ms})")
     return []
 
-async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None):
-    return await fetch_bingx_candles(symbol, timeframe=timeframe, limit=limit, interval=interval)
+async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None, end_time_ms: int = None):
+    # Обертка для fetch_bingx_candles с поддержкой end_time_ms
+    return await fetch_bingx_candles(symbol, timeframe=timeframe, limit=limit, interval=interval, end_time_ms=end_time_ms)
 
 async def get_ticker_price(symbol: str) -> float:
     sym = symbol.upper()
