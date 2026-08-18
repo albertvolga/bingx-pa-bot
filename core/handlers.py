@@ -10,12 +10,14 @@ from core.ai_handler import process_ai_message, format_alerts_table, clean_symbo
 from core.bingx import fetch_bingx_candles
 from core.patterns import analyze_patterns
 from core.stt import transcribe_voice
+from core.formatter import format_report # Импортируем новую функцию форматирования
 
 router = Router()
 
 def register_custom_handlers(dp, bot=None):
     dp.include_router(router)
 
+# Список символов для сканирования - теперь можно расширить или брать извне
 SCAN_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOT-USDT", "PAXG-USDT", "SILVER-USDT", "DOGE-USDT", "ADA-USDT", "LTC-USDT"]
 
 def build_compact_keyboard(buttons, row_width=4):
@@ -30,87 +32,55 @@ def build_compact_keyboard(buttons, row_width=4):
         keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def calculate_bar_close_time(ts_ms: float, tf: str) -> str:
-    """Вычисляет точное время ЗАКРЫТИЯ свечи по ее метке времени открытия"""
-    if ts_ms <= 0:
-        return "12:00"
-    dt_open = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc) + datetime.timedelta(hours=3)
-    
-    if tf == "15m":
-        dt_close = dt_open + datetime.timedelta(minutes=15)
-    elif tf == "1h":
-        dt_close = dt_open + datetime.timedelta(hours=1)
-    elif tf == "4h":
-        dt_close = dt_open + datetime.timedelta(hours=4)
-    elif tf in ["1d", "1w"]:
-        dt_close = dt_open + datetime.timedelta(days=1)
-    else:
-        dt_close = dt_open
-        
-    return dt_close.strftime("%H:%M")
-
-async def run_scan(message: Message, interval: str = "all", is_auto: bool = False):
+async def run_scan(message: Message, interval: str = "all"):
+    """
+    Запускает сканирование паттернов для ручных команд /scan.
+    Анализирует ПОСЛЕДНИЙ ЗАКРЫТЫЙ бар.
+    """
     now_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
-    now_str = now_dt.strftime("%d.%m.%2y %H:%M")
-    
-    if is_auto:
-        title_name = f"АвтоОтчёт на {now_str} МСК"
-        status_text = f"🔍 Запускаю автоотчет ({now_str} МСК)..."
-    else:
-        tf_title = "Все ТФ" if interval == "all" else interval
-        title_name = f"Сканирование {tf_title} ({now_str} МСК)"
-        status_text = f"🔍 Запускаю сканирование {tf_title}..."
+    tf_title = "Все ТФ" if interval == "all" else interval
+    status_text = f"🔍 Запускаю сканирование {tf_title} ({now_dt.strftime('%d.%m.%y %H:%M')} МСК)..."
 
-    # Отправляем временное статусное сообщение
     status_msg = await message.answer(status_text)
 
-    timeframes = ["1h", "4h", "1d"] if interval == "all" else [interval]
-    rows = []
+    # Включаем 1w для ручного сканирования, если это не конкретный ТФ
+    timeframes = ["1h", "4h", "1d", "1w"] if interval == "all" else [interval]
+    all_signals = []
 
     for sym in SCAN_SYMBOLS:
-        clean_name = sym.replace("-USDT", "").replace("SILVER", "XAG").replace("PAXG", "XAU")[:4]
-        
         for tf in timeframes:
             try:
-                klines = await fetch_bingx_candles(sym, timeframe=tf, limit=30, interval=tf)
-                if not klines or len(klines) < 22:
+                # Для ручного сканирования берем достаточно свечей для анализа паттернов
+                # analyze_patterns смотрит на последние 3 свечи, поэтому limit=3 будет достаточно,
+                # но для более надежного обнаружения, скажем, 5-7. Возьмем 10 на всякий случай.
+                klines = await fetch_bingx_candles(sym, timeframe=tf, limit=10, interval=tf)
+                if not klines or len(klines) < 3: # Для анализа нужно мин 3
                     continue
 
                 df = pd.DataFrame(klines)
-                last_closed = df.iloc[-2]
                 
-                # Получаем точное время ЗАКРЫТИЯ свечи
-                ts = float(last_closed.get("time", last_closed.get("timestamp", 0)))
-                time_str = calculate_bar_close_time(ts, tf)
+                # analyze_patterns работает с DataFrame и возвращает паттерн для последнего ЗАКРЫТОГО бара
+                # BingX API (fetch_bingx_candles) возвращает уже закрытые свечи. Последняя в списке - это последний закрытый бар.
+                pat_found = analyze_patterns(df) 
 
-                pat, dir_icon, state_icon = analyze_patterns(df)
-
-                rows.append({
-                    "act": clean_name,
-                    "time": time_str,
-                    "tf": tf,
-                    "dir": dir_icon,
-                    "pat": pat,
-                    "state": state_icon
-                })
+                if pat_found != "-": # Если паттерн найден
+                    last_closed_candle = df.iloc[-1] 
+                    direction = "bull" if last_closed_candle['close'] >= last_closed_candle['open'] else "bear"
+                    
+                    all_signals.append({
+                        "symbol": clean_symbol(sym),
+                        "tf": tf,
+                        "pattern": pat_found,
+                        "direction": direction,
+                        "is_auto": False, # Это ручной скан
+                        "timestamp": last_closed_candle['time'] # Для отображения времени открытия последнего закрытого бара
+                    })
             except Exception as e:
                 logging.error(f"Ошибка сканирования {sym} {tf}: {e}")
 
-    if not rows:
-        await status_msg.edit_text("⚠️ Не удалось сформировать отчет.")
-        return
-
-    table_text = f"📊 <b>{title_name}:</b>\n\n<pre>"
-    table_text += f"{'АКТ':<4} | {'ВРЕМЯ':<5} | {'ТФ':<3} | {'НАПР'} | {'ПАТ':<7} | {'СОСТ'}\n"
-    table_text += "-" * 38 + "\n"
-
-    for r in rows:
-        table_text += f"{r['act']:<4} | {r['time']:<5} | {r['tf']:<3} |  {r['dir']}   | {r['pat']:<7} | {r['state']}\n"
-
-    table_text += "</pre>"
+    report_text = format_report(all_signals, is_auto=False, now_dt=now_dt)
     
-    # Редактируем временное сообщение, чтобы оно не оставалось висеть!
-    await status_msg.edit_text(table_text)
+    await status_msg.edit_text(report_text, parse_mode="HTML")
 
 @router.message(Command("alerts"))
 async def cmd_alerts(message: Message):

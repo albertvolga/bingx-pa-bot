@@ -80,3 +80,41 @@ async def get_ticker_price(symbol: str) -> float:
         except Exception:
             continue
     return 0.0
+
+async def get_all_usdt_pairs() -> list:
+    """
+    Получение всех USDT пар со спота и фьючерсов BingX.
+    """
+    all_pairs = set()
+    urls = [
+        f"{BINGX_BASE_URL}/openApi/swap/v2/quote/contracts", # Фьючерсы
+        f"{BINGX_BASE_URL}/openApi/spot/v1/market/symbols" # Спот (обновленный эндпоинт для списка символов)
+    ]
+
+    for url in urls:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
+                    if data.get("code") == 0 and "data" in data:
+                        if "contracts" in url: # Swap
+                            for item in data["data"]:
+                                if item.get("currency") == "USDT" and item.get("status") == "TRADING":
+                                    all_pairs.add(item["symbol"])
+                        elif "symbols" in url: # Spot
+                            for item in data["data"]: # Список элементов сразу в 'data'
+                                if item.get("quoteAsset") == "USDT" and item.get("status") == "TRADING":
+                                    all_pairs.add(item["symbol"])
+        except Exception as e:
+            print(f"⚠️ BingX API: Ошибка при получении пар с {url}: {e}")
+            continue
+            
+    # Приводим к единому формату BTC-USDT
+    formatted_pairs = []
+    for pair in all_pairs:
+        if "-USDT" in pair:
+            formatted_pairs.append(pair)
+        elif "USDT" in pair: # Например, BTCUSDT -> BTC-USDT
+            formatted_pairs.append(f"{pair.replace('USDT', '')}-USDT")
+
+    return sorted(list(set(formatted_pairs)))

@@ -10,7 +10,8 @@ from config import TELEGRAM_BOT_TOKEN
 from core.database import init_db, get_connection, delete_alert
 from core.ai_handler import clean_symbol
 from core.handlers import register_custom_handlers
-from core.fetcher import fetch_klines, get_all_usdt_pairs, get_ticker_price
+from core.fetcher import fetch_klines, get_ticker_price
+from core.bingx.candles import get_all_usdt_pairs # Новый импорт для получения всех пар
 from core.patterns import analyze_patterns
 from core.formatter import format_report # Обновленный импорт
 

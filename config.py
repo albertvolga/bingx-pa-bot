@@ -22,7 +22,18 @@ SYMBOL_MAP = {
     "AVAX": "AVAX-USDT",
     "DOT": "DOT-USDT",
     "LINK": "LINK-USDT",
-    "GOLD": "PAXG-USDT"
+    "GOLD": "PAXG-USDT",
+    "PAXG": "PAXG-USDT", # Добавлено для консистентности, PAXG - это золото на BingX
+    "XAU": "PAXG-USDT",  # Алиас для золота
+    "SILVER": "XAG-USDT", # Серебро на BingX
+    "XAG": "XAG-USDT",   # Алиас для серебра
+    "KAS": "KAS-USDT",
+    "ATOM": "ATOM-USDT",
+    "XMR": "XMR-USDT",
+    # Для таких товаров как Natural Gas или Oil Brent на BingX нужно убедиться,
+    # что у них есть соответствующие символы в формате X-USDT.
+    # Если они появятся на BingX, их можно добавить сюда.
+    # Например: "NATURALGAS": "NG-USDT", "OILBRENT": "BRT-USDT"
 }
 
 if not TELEGRAM_BOT_TOKEN:

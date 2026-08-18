@@ -4,39 +4,69 @@ import re
 from core.nlp_parser import parse_user_intent
 from core.database import add_alert, get_all_alerts, delete_alert
 from core.bingx import fetch_bingx_candles
-
-SYMBOL_MAP = {
-    # Драгметаллы и товары
-    "SILVER": "SILVER", "XAG": "SILVER", "СЕРЕБРО": "SILVER", "СЕРЕБРУ": "SILVER", "СЕРЕБРА": "SILVER",
-    "PAXG": "PAXG", "XAU": "PAXG", "GOLD": "PAXG", "ЗОЛОТО": "PAXG", "ЗОЛОТУ": "PAXG", "ЗОЛОТА": "PAXG",
-    "NATURALGAS": "NATURALGAS", "NG": "NATURALGAS", "ГАЗ": "NATURALGAS", "ГАЗА": "NATURALGAS",
-    "OILBRENT": "OILBRENT", "BRENT": "OILBRENT", "OIL": "OILBRENT", "НЕФТЬ": "OILBRENT", "НЕФТИ": "OILBRENT",
-
-    # Криптовалюты
-    "KAS": "KAS", "КАСПА": "KAS", "КАССПА": "KAS", "КАСПУ": "KAS",
-    "ATOM": "ATOM", "АТОМ": "ATOM", "КОСМОС": "ATOM",
-    "XMR": "XMR", "МОНЕРО": "XMR", "МОНЕЙРО": "XMR",
-    "DOGE": "DOGE", "ДОДЖ": "DOGE", "ДОДЖУ": "DOGE", "ДОГИ": "DOGE",
-    "ADA": "ADA", "КАРДАНО": "ADA", "АДА": "ADA", "АДУ": "ADA",
-    "LTC": "LTC", "ЛАЙТКОИН": "LTC", "ЛАЙТКОЙН": "LTC", "ЛАЙТ": "LTC", "ЛАЙТА": "LTC",
-    "SOL": "SOL", "СОЛАНА": "SOL", "СОЛАНЕ": "SOL", "СОЛАНУ": "SOL", "СОЛ": "SOL",
-    "ETH": "ETH", "ЭФИР": "ETH", "ЭФИРУ": "ETH", "ЭФИРЕ": "ETH", "ЭФИРИУМ": "ETH",
-    "BTC": "BTC", "БИТКОИН": "BTC", "БИТКОИНУ": "BTC", "БИТОК": "BTC", "БИТКУ": "BTC",
-    "XRP": "XRP", "РИПЛ": "XRP", "РИППЛ": "XRP", "РИПЛА": "XRP",
-    "DOT": "DOT", "ПОЛКАДОТ": "DOT", "ДОТ": "DOT", "ДОТУ": "DOT"
-}
+from config import SYMBOL_MAP # Импортируем SYMBOL_MAP из config.py
 
 def clean_symbol(symbol: str) -> str:
-    sym = symbol.upper().replace("-USDT", "").replace(".P", "").replace(".F", "").replace("USDT", "")
-    return SYMBOL_MAP.get(sym, sym)
+    """
+    Очищает символ, убирая суффиксы USDT и преобразуя к короткому имени, если есть в SYMBOL_MAP.
+    """
+    sym_cleaned = symbol.upper().replace("-USDT", "").replace(".P", "").replace(".F", "").replace("USDT", "")
+    
+    # Ищем короткое имя среди ключей SYMBOL_MAP
+    if sym_cleaned in SYMBOL_MAP:
+        return sym_cleaned
+        
+    # Ищем полное имя (значение) в SYMBOL_MAP и возвращаем соответствующий ключ
+    for short_name, full_name_usdt in SYMBOL_MAP.items():
+        if sym_cleaned == full_name_usdt.replace('-USDT', ''):
+            return short_name
+            
+    return sym_cleaned # Если не найдено, возвращаем как есть
 
 def extract_symbol_from_text(text: str) -> str:
-    text_upper = text.upper()
-    words = re.findall(r'[A-ZА-Я0-9]+', text_upper)
+    """
+    Извлекает символ актива из текста, используя SYMBOL_MAP и русские синонимы.
+    Возвращает короткое имя символа (например, 'BTC', 'PAXG').
+    """
+    t_lower = text.lower()
+    
+    # Создаем обратный маппинг для поиска по русским и полным названиям
+    reverse_map = {}
+    for short_name, full_name_usdt in SYMBOL_MAP.items():
+        reverse_map[short_name.lower()] = short_name # btc -> BTC
+        reverse_map[full_name_usdt.lower()] = short_name # btc-usdt -> BTC
+        reverse_map[full_name_usdt.replace('-USDT', '').lower()] = short_name # btc -> BTC
+        
+    # Добавляем наиболее распространенные русские эквиваленты и синонимы
+    russian_synonyms = {
+        "золото": "PAXG", "xau": "PAXG", "голд": "PAXG",
+        "серебро": "SILVER", "xag": "SILVER", "сильвер": "SILVER",
+        "каспа": "KAS", "касспа": "KAS",
+        "атом": "ATOM", "космос": "ATOM",
+        "монеро": "XMR", "монейро": "XMR",
+        "доги": "DOGE", "додг": "DOGE",
+        "ада": "ADA", "кардано": "ADA",
+        "лайткоин": "LTC", "лайт": "LTC",
+        "солана": "SOL", "сол": "SOL",
+        "эфир": "ETH", "эфириум": "ETH",
+        "биткоин": "BTC", "биток": "BTC",
+        "рипл": "XRP", "риппл": "XRP",
+        "дот": "DOT", "полкадот": "DOT",
+    }
+    reverse_map.update(russian_synonyms)
+
+    words = re.findall(r'[a-zа-я0-9]+', t_lower)
+    # Ищем самое длинное совпадение, чтобы избежать ложных срабатываний на "сол" в "солана"
+    best_match = None
+    best_match_len = 0
+
     for w in words:
-        if w in SYMBOL_MAP:
-            return SYMBOL_MAP[w]
-    return None  # Больше никакого фолбэка на BTC!
+        if w in reverse_map:
+            if len(w) > best_match_len:
+                best_match = reverse_map[w]
+                best_match_len = len(w)
+            
+    return best_match
 
 def parse_timeframe_and_offset(text: str):
     t_lower = text.lower()
