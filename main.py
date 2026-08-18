@@ -7,15 +7,15 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
 from config import TELEGRAM_BOT_TOKEN
-from core.database import init_db
-from core.ai_handler import timer_checker_loop
-from core.handlers import register_custom_handlers, clean_symbol
-from core.fetcher import fetch_klines
+from core.database import init_db, get_connection, delete_alert
+from core.ai_handler import clean_symbol
+from core.handlers import register_custom_handlers
+from core.fetcher import fetch_klines, get_all_usdt_pairs, get_ticker_price
 from core.patterns import analyze_patterns
-from core.formatter import format_table_report
+from core.formatter import format_report # Обновленный импорт
 
 MSK_TZ = timezone(timedelta(hours=3))
-MY_CHAT_ID = 8029964519  # Твой личный Telegram ID
+MY_CHAT_ID = 8029964519  # Твой личный Telegram ID (замени на свой)
 
 TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0}
 
