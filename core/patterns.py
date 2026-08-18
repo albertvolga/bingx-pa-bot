@@ -1,118 +1,202 @@
+import numpy as np
 import pandas as pd
-from datetime import datetime, timezone, timedelta
 
-MSK_TZ = timezone(timedelta(hours=3))
-
-def is_pin_bar(candle):
-    high = float(candle['high'])
-    low = float(candle['low'])
-    open_p = float(candle['open'])
-    close_p = float(candle['close'])
-    total_range = high - low
-    if total_range == 0:
-        return False
-    body = abs(close_p - open_p)
-    upper_shadow = high - max(open_p, close_p)
-    lower_shadow = min(open_p, close_p) - low
-    
-    # Классический пин-бар: длинный хвост > 60%, маленькое тело < 25%
-    is_bull_pin = (lower_shadow / total_range >= 0.60) and (body / total_range <= 0.25)
-    is_bear_pin = (upper_shadow / total_range >= 0.60) and (body / total_range <= 0.25)
-    
-    return is_bull_pin or is_bear_pin
-
-def is_outside_bar(candle, prev_candle):
-    return (float(candle['high']) > float(prev_candle['high'])) and (float(candle['low']) < float(prev_candle['low']))
-
-def is_inside_bar(candle, prev_candle):
-    return (float(candle['high']) <= float(prev_candle['high'])) and (float(candle['low']) >= float(prev_candle['low']))
-
-def is_ppr(candle, prev_candle, prev_prev_candle):
+def normalize_candles(candles):
     """
-    Классический Pivot Point Reversal (ППР):
-    1. Медвежий PPR:
-       - prev_candle делает High выше, чем prev_prev_candle
-       - candle закрывается НИЖЕ Low prev_candle
-    2. Бычий PPR:
-       - prev_candle делает Low ниже, чем prev_prev_candle
-       - candle закрывается ВЫШЕ High prev_candle
+    Приводит candles (DataFrame или list) к единому списку словарей dict
     """
-    c_close = float(candle['close'])
-    c_high = float(candle['high'])
-    c_low = float(candle['low'])
-    
-    p_high = float(prev_candle['high'])
-    p_low = float(prev_candle['low'])
-    
-    pp_high = float(prev_prev_candle['high'])
-    pp_low = float(prev_prev_candle['low'])
+    if candles is None:
+        return []
+    if isinstance(candles, pd.DataFrame):
+        if candles.empty:
+            return []
+        # Приводим имена колонок к нижнему регистру для единообразия
+        df = candles.copy()
+        df.columns = [str(col).lower() for col in df.columns]
+        return df.to_dict('records')
+    if isinstance(candles, list):
+        if not candles:
+            return []
+        normalized = []
+        for c in candles:
+            if isinstance(c, dict):
+                normalized.append({str(k).lower(): v for k, v in c.items()})
+        return normalized
+    return []
 
-    if is_outside_bar(candle, prev_candle):
-        return False
+def calculate_atr(candles, period=14):
+    if len(candles) < period + 1:
+        return 0.0
+    tr_list = []
+    for i in range(-period, 0):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_close = candles[i-1]['close']
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+    return float(np.mean(tr_list)) if tr_list else 0.0
 
-    is_bearish_ppr = (p_high > pp_high) and (c_close < p_low)
-    is_bullish_ppr = (p_low < pp_low) and (c_close > p_high)
+def detect_pin_bar(candles):
+    if len(candles) < 2:
+        return None
+    c = candles[-1]
+    rng = c['high'] - c['low']
+    if rng == 0:
+        return None
+    body = abs(c['close'] - c['open'])
+    upper_tail = c['high'] - max(c['open'], c['close'])
+    lower_tail = min(c['open'], c['close']) - c['low']
     
-    return is_bearish_ppr or is_bullish_ppr
+    if lower_tail >= 0.55 * rng and body <= 0.35 * rng:
+        return "Pin"
+    if upper_tail >= 0.55 * rng and body <= 0.35 * rng:
+        return "Pin"
+    return None
 
-def is_fakey(curr, prev, prev_prev):
-    """
-    Fakey: prev_prev и prev формируют Inside Bar, а curr делал ложный пробой и вернулся.
-    """
-    if is_inside_bar(prev, prev_prev):
-        mother_high = float(prev_prev['high'])
-        mother_low = float(prev_prev['low'])
-        c_close = float(curr['close'])
-        c_high = float(curr['high'])
-        c_low = float(curr['low'])
+def detect_inside_bar(candles):
+    if len(candles) < 2:
+        return None
+    mother = candles[-2]
+    inside = candles[-1]
+    if inside['high'] <= mother['high'] and inside['low'] >= mother['low']:
+        return "Ins"
+    return None
+
+def detect_fakey(candles):
+    if len(candles) < 3:
+        return None
+    mother = candles[-3]
+    inside = candles[-2]
+    signal = candles[-1]
+    
+    is_inside = (inside['high'] <= mother['high']) and (inside['low'] >= mother['low'])
+    if not is_inside:
+        return None
         
-        # Ложный пробой вверх и возврат
-        if c_high > mother_high and c_close < mother_high:
-            return True
-        # Ложный пробой вниз и возврат
-        if c_low < mother_low and c_close > mother_low:
-            return True
-    return False
+    if signal['low'] < inside['low'] and signal['close'] > inside['high']:
+        return "Fak"
+    if signal['high'] > inside['high'] and signal['close'] < inside['low']:
+        return "Fak"
+    return None
 
-def is_squat(candle, prev_candle=None):
-    if prev_candle is None or 'volume' not in candle or 'volume' not in prev_candle:
-        return False
-    spread = float(candle['high']) - float(candle['low'])
-    prev_spread = float(prev_candle['high']) - float(prev_candle['low'])
-    if spread == 0 or prev_spread == 0:
-        return False
-    return (float(candle['volume']) > float(prev_candle['volume'])) and (spread < prev_spread * 0.8)
-
-def analyze_patterns(df: pd.DataFrame) -> tuple:
-    if len(df) < 21:
-        return "-", "🟡", ""
-
-    curr = df.iloc[-2]       # Последняя полностью закрытая свеча
-    prev = df.iloc[-3]       # Предыдущая
-    prev_prev = df.iloc[-4]  # Пред-предыдущая
+def detect_ppr(candles):
+    if len(candles) < 3:
+        return None
+    c2 = candles[-3]
+    c1 = candles[-2]
+    c0 = candles[-1]
     
-    close_p = float(curr["close"])
+    if c1['high'] > c2['high'] and c0['close'] < c1['low']:
+        return "PPR"
+    if c1['low'] < c2['low'] and c0['close'] > c1['high']:
+        return "PPR"
+    return None
 
-    # SMA 20 для определения тренда/направления
-    sma20 = df["close"].astype(float).tail(21).iloc[:-1].mean()
-    direction = "🟡" if close_p >= sma20 else "🔴"
+def detect_ud_bar(candles):
+    if len(candles) < 2:
+        return None
+    prev = candles[-2]
+    curr = candles[-1]
+    prev_rng = prev['high'] - prev['low']
+    if prev_rng == 0:
+        return None
+        
+    if prev['close'] < prev['open'] and curr['close'] > curr['open']:
+        if curr['close'] >= prev['high'] and curr['low'] >= (prev['low'] - 0.1 * prev_rng):
+            return "UD"
+    if prev['close'] > prev['open'] and curr['close'] < curr['open']:
+        if curr['close'] <= prev['low'] and curr['high'] <= (prev['high'] + 0.1 * prev_rng):
+            return "UD"
+    return None
 
-    pats = []
+def detect_impossible_pattern(candles, atr_period=14, lookback=20):
+    if len(candles) < max(atr_period + 1, lookback):
+        return None
+    curr = candles[-1]
+    rng = curr['high'] - curr['low']
+    if rng == 0:
+        return None
+        
+    atr = calculate_atr(candles, period=atr_period)
+    upper_tail = curr['high'] - max(curr['open'], curr['close'])
+    lower_tail = min(curr['open'], curr['close']) - curr['low']
     
-    if is_fakey(curr, prev, prev_prev):
-        pats.append("Fak")
-    elif is_ppr(curr, prev, prev_prev):
-        pats.append("PPR")
-    elif is_pin_bar(curr):
-        pats.append("Pin")
-    elif is_outside_bar(curr, prev):
-        pats.append("Out")
-    elif is_inside_bar(curr, prev):
-        pats.append("Ins")
+    recent_highs = [c['high'] for c in candles[-lookback-1:-1]]
+    recent_lows = [c['low'] for c in candles[-lookback-1:-1]]
+    
+    if curr['high'] > max(recent_highs) and (upper_tail >= 0.7 * rng) and ((curr['close'] - curr['low']) <= 0.1 * rng) and (rng >= 2.0 * atr):
+        return "Imp"
+    if curr['low'] < min(recent_lows) and (lower_tail >= 0.7 * rng) and ((curr['high'] - curr['close']) <= 0.1 * rng) and (rng >= 2.0 * atr):
+        return "Imp"
+    return None
 
-    pat_str = "/".join(pats) if pats else "-"
+def detect_combo_pin_engulfing(candles):
+    if len(candles) < 3:
+        return None
+    prev = candles[-2]
+    curr = candles[-1]
+    prev_rng = prev['high'] - prev['low']
+    if prev_rng == 0:
+        return None
+        
+    prev_body = abs(prev['close'] - prev['open'])
+    prev_lower_tail = min(prev['open'], prev['close']) - prev['low']
+    prev_upper_tail = prev['high'] - max(prev['open'], prev['close'])
+    
+    is_prev_bull_pin = (prev_lower_tail >= 0.55 * prev_rng) and (prev_body <= 0.35 * prev_rng)
+    is_prev_bear_pin = (prev_upper_tail >= 0.55 * prev_rng) and (prev_body <= 0.35 * prev_rng)
+    
+    if is_prev_bull_pin and curr['close'] > prev['high']:
+        return "Cmb"
+    if is_prev_bear_pin and curr['close'] < prev['low']:
+        return "Cmb"
+    return None
 
-    is_sq = is_squat(curr, prev)
-    state_str = "🟦" if is_sq else ""
+def validate_pin_m15_structure(m15_candles):
+    m15_list = normalize_candles(m15_candles)
+    if not m15_list or len(m15_list) < 4:
+        return True
+    lows = [c['low'] for c in m15_list]
+    min_idx = lows.index(min(lows))
+    return min_idx <= 2 and m15_list[-1]['close'] > m15_list[min_idx]['low']
 
-    return pat_str, direction, state_str
+def analyze_patterns(candles, m15_candles=None):
+    """
+    Универсальная функция анализа паттернов с нормализацией входных данных
+    """
+    candle_list = normalize_candles(candles)
+    if not candle_list or len(candle_list) < 3:
+        return "-"
+        
+    cmb = detect_combo_pin_engulfing(candle_list)
+    if cmb:
+        return cmb
+        
+    imp = detect_impossible_pattern(candle_list)
+    if imp:
+        return imp
+        
+    fak = detect_fakey(candle_list)
+    if fak:
+        return fak
+        
+    ppr = detect_ppr(candle_list)
+    if ppr:
+        return ppr
+        
+    ud = detect_ud_bar(candle_list)
+    if ud:
+        return ud
+        
+    pin = detect_pin_bar(candle_list)
+    if pin:
+        if m15_candles and not validate_pin_m15_structure(m15_candles):
+            pass
+        else:
+            return pin
+            
+    ins = detect_inside_bar(candle_list)
+    if ins:
+        return ins
+        
+    return "-"
