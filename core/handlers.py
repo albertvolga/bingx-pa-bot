@@ -40,7 +40,7 @@ async def run_scan(message: Message, interval: str = "all", scan_datetime: datet
     Может анализировать как последний ЗАКРЫТЫЙ бар, так и исторический бар.
     """
     is_historical_scan = scan_datetime is not None
-    now_msk = datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+    now_msk = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
     
     if is_historical_scan:
         display_time = scan_datetime.strftime('%d.%m.%y %H:%M')
