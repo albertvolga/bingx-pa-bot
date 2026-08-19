@@ -22,6 +22,36 @@ def register_custom_handlers(dp, bot=None):
 # SCAN_SYMBOLS будет использоваться как полный список для /scan
 # Для автоотчета берется get_all_usdt_pairs()
 
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = (
+        "📚 <b>Справка по командам и обозначениям:</b>\n\n"
+        "<b>Общие команды:</b>\n"
+        "▫️ <code>/start</code> — Приветствие и краткий список команд.\n"
+        "▫️ <code>/help</code> — Эта справка.\n"
+        "▫️ <code>/list</code> — Показать все отслеживаемые активы и таймфреймы.\n"
+        "▫️ <code>/status</code> — Проверить статус работы бота.\n\n"
+        "<b>Сканирование рынка:</b>\n"
+        "▫️ <code>/scan</code> — Ручное сканирование всех ТФ. \n"
+        "   Например: <code>/scan</code> (сейчас) или <code>/scan 15.08 10:00</code> (исторический скан).\n"
+        "▫️ <code>/scan_1h</code>, <code>/scan_4h</code>, <code>/scan_1d</code>, <code>/scan_1w</code> — Ручное сканирование конкретного ТФ.\n\n"
+        "<b>Управление алертами:</b>\n"
+        "▫️ <code>/alerts</code> — Показать все ваши активные алерты.\n"
+        "▫️ <code>/del_all</code> — Удалить ВСЕ ваши активные алерты.\n"
+        "▫️ <b>Создание алерта голосом или текстом:</b>\n"
+        "   Например: <i>«Поставь алерт на KAS на 0.1249»</i>\n"
+        "   Или: <i>«Когда Эфир пробьет хай вчерашней дневной свечи?»</i>\n"
+        "   Или: <i>«Алерт на ADA по лоу 4-часовой свечи закрытой в 10:00»</i>\n\n"
+        "<b>Эмодзи в отчётах:</b>\n"
+        "▫️ <code>🟡🟡🟡</code> — Направление тренда по BB: сильное восходящее.\n"
+        "▫️ <code>🔴🔴🔴</code> — Направление тренда по BB: сильное нисходящее.\n"
+        "▫️ <code>⚪⚪⚪</code> — Направление тренда по BB: флэт или смешанное.\n"
+        "▫️ <code>☀️</code> — Состояние свечи: <code>Squeeze</code> (сужение волатильности).\n"
+        "▫️ <code>💥</code> — Состояние свечи: <code>Expansion</code> (расширение волатильности).\n"
+        "▫️ <code>🔷</code> — Состояние свечи: <code>Squat</code> (узкое тело при потенциально большом объеме - текущая заглушка без анализа объема).\n"
+    )
+    await message.answer(help_text, parse_mode="HTML")
+
 def build_compact_keyboard(buttons, row_width=4):
     keyboard = []
     row = []
@@ -42,14 +72,18 @@ async def run_scan(message: Message, interval: str = "all", scan_datetime: datet
     is_historical_scan = scan_datetime is not None
     now_msk = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
     
+    # Определяем текущее время для отображения, если не исторический скан
+    current_time_display = now_msk.strftime('%d.%m.%y %H:%M')
+
     if is_historical_scan:
-        display_time = scan_datetime.strftime('%d.%m.%y %H:%M')
+        # scan_datetime в данном случае уже в UTC, как его отправит API.
+        # Для отображения пользователю конвертируем в MSK
+        display_time = (scan_datetime + datetime.timedelta(hours=3)).strftime('%d.%m.%y %H:%M') 
         tf_title = "Все ТФ" if interval == "all" else interval
         status_text = f"🔍 Запускаю историческое сканирование {tf_title} на {display_time} МСК..."
     else:
-        display_time = now_msk.strftime('%d.%m.%y %H:%M')
         tf_title = "Все ТФ" if interval == "all" else interval
-        status_text = f"🔍 Запускаю сканирование {tf_title} ({display_time} МСК)..."
+        status_text = f"🔍 Запускаю сканирование {tf_title} ({current_time_display} МСК)..."
 
     status_msg = await message.answer(status_text)
 
@@ -69,11 +103,13 @@ async def run_scan(message: Message, interval: str = "all", scan_datetime: datet
                 # Max limit для BB(480) + 3 свечи для паттерна = ~483, округлим до 500.
                 limit_needed = 500 
 
+                # BingX API `fetch_bingx_candles` возвращает *закрытые* свечи.
+                # Если `end_time_ms` указан, то последняя свеча в `klines` будет последней *закрытой* до или в `end_time_ms`.
                 klines = await fetch_bingx_candles(
                     symbol=sym_full, 
                     timeframe=tf, 
                     limit=limit_needed, 
-                    # Если исторический скан, указываем endTime
+                    # Если исторический скан, указываем endTime (оно уже в UTC)
                     end_time_ms=int(scan_datetime.timestamp() * 1000) if is_historical_scan else None
                 )
                 
@@ -83,25 +119,16 @@ async def run_scan(message: Message, interval: str = "all", scan_datetime: datet
 
                 df = pd.DataFrame(klines)
                 
-                # При историческом сканировании, нам нужна свеча, которая ЗАКРЫЛАСЬ ДО scan_datetime.
-                # Если scan_datetime == 11:00, нам нужна свеча, закрывшаяся в 10:00.
-                # В BingX API `time` это время ОТКРЫТИЯ свечи.
-                # Поэтому, если `scan_datetime` передано, мы хотим анализировать бар, который предшествует `scan_datetime`
-                # или заканчивается в `scan_datetime`. 
-                # Так как BingX API возвращает свечи по времени ОТКРЫТИЯ, а мы запрашиваем до `end_time_ms`,
-                # последняя свеча в `klines` будет самой близкой к `end_time_ms`.
-                
-                # Для ручного сканирования всегда анализируем последнюю *доступную* свечу в df.
+                # Для ручного сканирования всегда анализируем последнюю *закрытую* свечу в df.
                 # analyze_patterns будет работать с df.iloc[-1] для однобарных паттернов
                 # и с более ранними для многобарных.
                 
-                # В `analyze_patterns` будут добавлены расчеты для НАПР и СОСТ
                 pat_data = analyze_patterns(df) # analyze_patterns теперь возвращает dict
                 
                 if pat_data and pat_data["pattern"] != "-": 
-                    last_analyzed_candle = df.iloc[-1] 
-                    direction_bb = pat_data.get("direction_bb", '⚪⚪⚪') # Заглушка
-                    state_emoji = pat_data.get("state_emoji", '') # Заглушка
+                    last_analyzed_candle = df.iloc[-1] # Последняя *закрытая* свеча
+                    direction_bb = pat_data.get("direction_bb", '⚪⚪⚪') 
+                    state_emoji = pat_data.get("state_emoji", '') 
                     
                     all_signals.append({
                         "symbol": clean_symbol(sym_full),
@@ -136,20 +163,30 @@ async def cmd_del_all(message: Message):
 async def cmd_scan_universal(message: Message):
     args = message.text.split()
     scan_dt = None
+    
+    # Define now_msk here for correct usage within the function scope
+    now_msk = datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+
     if len(args) > 1:
         # Пробуем распарсить дату и время
         try:
             # Ожидаем формат типа "ДД.ММ ЧЧ:ММ" или "ДД.ММ"
             date_time_str = " ".join(args[1:])
             
+            parsed_dt = None
             # Пробуем полный формат "ДД.ММ ЧЧ:ММ"
             try:
-                scan_dt = datetime.strptime(date_time_str, "%d.%m %H:%M").replace(year=now_msk.year)
+                parsed_dt = datetime.strptime(date_time_str, "%d.%m %H:%M")
             except ValueError:
-                # Если только дата "ДД.ММ", устанавливаем время по умолчанию 03:00 (закрытие дневной свечи)
-                scan_dt = datetime.strptime(date_time_str, "%d.%m").replace(year=now_msk.year, hour=3, minute=0)
+                # Если только дата "ДД.ММ", устанавливаем время по умолчанию 03:00 (время закрытия дневной свечи по MSK)
+                parsed_dt = datetime.strptime(date_time_str, "%d.%m").replace(hour=3, minute=0)
             
-            scan_dt = scan_dt.replace(tzinfo=datetime.timedelta(hours=3)) # Указываем MSK
+            # Устанавливаем год в текущий, если не указан, и добавляем часовой пояс MSK
+            # BingX API работает с timestamp в UTC, поэтому конвертируем.
+            # Мы хотим запросить данные *до* определенного времени MSK.
+            scan_dt_utc = parsed_dt.replace(year=now_msk.year, tzinfo=datetime.timezone.utc) - datetime.timedelta(hours=3) # Convert back to UTC for BingX API if original time was MSK
+
+            scan_dt = scan_dt_utc # The scan_datetime passed to run_scan should be in UTC or explicitly handled
             
         except ValueError:
             await message.answer("❌ Неверный формат даты/времени. Используйте <code>/scan ДД.ММ ЧЧ:ММ</code> или <code>/scan ДД.ММ</code>.")
@@ -173,6 +210,7 @@ async def cmd_scan_1w(message: Message): await run_scan(message, "1w")
 async def process_del_alert(callback: CallbackQuery):
     alert_id = int(callback.data.split("_")[2])
     delete_alert(alert_id, chat_id=callback.message.chat.id)
+    # Убеждаемся, что мы отвечаем на коллбек до того, как пытаемся редактировать сообщение.
     await callback.answer("Алерт удален!")
     
     alerts_list = get_all_alerts(chat_id=callback.message.chat.id)
@@ -180,10 +218,16 @@ async def process_del_alert(callback: CallbackQuery):
     keyboard = build_compact_keyboard(buttons, row_width=4) if buttons else None
     
     try:
-        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        # Если алертов больше нет, убираем reply_markup полностью, чтобы не висели старые кнопки
+        if not alerts_list:
+            await callback.message.edit_text(text, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         logging.warning(f"Ошибка при обновлении сообщения после удаления алерта: {e}")
-        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML") # Отправляем новое, если старое не обновить
+        # Если редактирование не удалось (например, сообщение слишком старое или без кнопок),
+        # отправляем новое сообщение с обновленным списком.
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML") 
 
 @router.callback_query(F.data.startswith("set_recurring_"))
 async def process_set_recurring(callback: CallbackQuery):

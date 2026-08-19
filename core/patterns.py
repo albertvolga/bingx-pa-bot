@@ -116,10 +116,17 @@ def get_bb_direction_emoji(candles_df: pd.DataFrame) -> str:
         middle_line = bb['middle'].iloc[-5:]
         slope = np.polyfit(np.arange(len(middle_line)), middle_line, 1)[0]
         
-        # Определяем направление с учетом небольшой толерантности
-        if slope > 0.0001: # Если наклон положительный
+        # Определяем направление с учетом небольшой толерантности,
+        # чтобы избежать ложных срабатываний на почти горизонтальных линиях.
+        # Используем порог, зависящий от среднего значения линии, чтобы быть более адаптивным.
+        # Например, 0.01% от средней цены за период.
+        avg_price_for_period = middle_line.mean()
+        # Если среднее значение 0, используем фиксированный минимальный порог
+        slope_threshold = max(avg_price_for_period * 0.0001, 1e-6) 
+
+        if slope > slope_threshold: # Если наклон положительный
             directions.append(1)
-        elif slope < -0.0001: # Если наклон отрицательный
+        elif slope < -slope_threshold: # Если наклон отрицательный
             directions.append(-1)
         else:
             directions.append(0)
