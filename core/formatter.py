@@ -69,6 +69,7 @@ def merge_signals(signals_list: list) -> list:
                 # Новые поля для индикаторов и состояния
                 'direction_bb': sig.get('direction_bb', '⚪⚪⚪'), # 3 эмодзи по умолчанию
                 'state_emoji': sig.get('state_emoji', ''), # Эмодзи состояния
+                'bb_breakthrough': sig.get('bb_breakthrough', ''), # Новое поле для пробоев BB
             }
         
         if sig.get('pattern') and sig['pattern'] != "-":
@@ -86,6 +87,7 @@ def merge_signals(signals_list: list) -> list:
             'direction_bb': data['direction_bb'],
             'pattern': pat_str,
             'state_emoji': data['state_emoji'],
+            'bb_breakthrough': data['bb_breakthrough'], # Добавляем в merged_rows
         })
     return merged_rows
 
@@ -113,8 +115,9 @@ def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None)
     TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0, "5m": -1, "1m": -2} # Расширен для будущих ТФ
     merged_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
 
-    table_header = f"{'АКТ':<4} | {'ВРЕМЯ':<5} | {'ТФ':<3} | {'НАПР'} | {'ПАТ':<7} | {'СОСТ'}\n"
-    divider = "-" * 39 + "\n" # Увеличиваем разделитель под новые колонки
+    # Увеличиваем размер заголовка и разделителя для новой колонки "ББ"
+    table_header = f"{'АКТ':<4} | {'ВРЕМЯ':<5} | {'ТФ':<3} | {'НАПР'} | {'ПАТ':<7} | {'СОСТ'} | {'ББ'}\n"
+    divider = "-" * 42 + "\n" # Увеличиваем разделитель под новые колонки (39 + 3 символа BB + 1 разделитель)
     
     lines = [f"<b>{header_title}</b>\n\n<pre>", table_header, divider]
     
@@ -125,8 +128,9 @@ def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None)
         direction_bb = str(r['direction_bb']) # Теперь это строка с эмодзи
         pattern = str(r['pattern']).ljust(7)
         state_emoji = str(r['state_emoji']).ljust(4) # Эмодзи состояния
-        
-        row_str = f"{symbol} | {display_time} | {tf_short} | {direction_bb} | {pattern} | {state_emoji}\n"
+        bb_breakthrough = str(r['bb_breakthrough']).ljust(2) # Новое поле "ББ"
+
+        row_str = f"{symbol} | {display_time} | {tf_short} | {direction_bb} | {pattern} | {state_emoji} | {bb_breakthrough}\n"
         lines.append(row_str)
         
     lines.append("</pre>")
