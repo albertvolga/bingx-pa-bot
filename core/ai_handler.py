@@ -79,16 +79,6 @@ def extract_symbol_from_text(text: str) -> str:
             break # Найден самый длинный подходящий термин, используем его
 
     return found_symbol
-    best_match = None
-    best_match_len = 0
-
-    for w in words:
-        if w in reverse_map:
-            if len(w) > best_match_len:
-                best_match = reverse_map[w]
-                best_match_len = len(w)
-            
-    return tf, offset, specific_bar_time
 
 async def process_ai_message(text: str, chat_id: int) -> dict:
     original_text = text # Сохраняем оригинальный текст для повторной обработки
