@@ -146,7 +146,7 @@ async def run_auto_schedule(bot: Bot):
             now_msk = datetime.now(MSK_TZ)
             
             # Определяем время следующего запуска (XX:55 каждой свечи)
-            next_run = now_msk.replace(minute=55, second=0, microsecond=0, microsecond=0)
+            next_run = now_msk.replace(minute=55, second=0, microsecond=0)
             if now_msk.minute >= 55:
                 next_run += timedelta(hours=1)
                 

@@ -4,14 +4,15 @@ import pandas as pd
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ContentType
 from aiogram.filters import Command
+from datetime import datetime, timezone # Import datetime and timezone
 
 from core.database import delete_alert, get_all_alerts, clear_all_alerts, set_alert_recurring
 from core.ai_handler import process_ai_message, clean_symbol
-from core.bingx.candles import fetch_bingx_candles, get_all_usdt_pairs # Добавлен get_all_usdt_pairs для динамического списка
-from core.patterns import analyze_patterns #, calculate_indicators_and_states # Пока без calculate_indicators_and_states
+from core.bingx.candles import fetch_bingx_candles, get_all_usdt_pairs
+from core.patterns import analyze_patterns
 from core.stt import transcribe_voice
-from core.formatter import format_report, format_alerts_table # Импортируем обе функции форматирования
-from config import SYMBOL_MAP # Используем SYMBOL_MAP для списка сканирования
+from core.formatter import format_report, format_alerts_table
+from config import SYMBOL_MAP, MSK_TZ # Import MSK_TZ from config (or main if moved there)
 
 router = Router()
 

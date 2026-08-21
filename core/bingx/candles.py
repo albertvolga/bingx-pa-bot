@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import logging # Added import
 
 BINGX_BASE_URL = "https://open-api.bingx.com"
 
