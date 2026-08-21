@@ -1,22 +1,21 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta # Keep datetime and timedelta for other uses
 import pandas as pd
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, MSK_TZ # Import MSK_TZ from config
 from core.database import init_db, get_connection, delete_alert, update_alert_triggered_status, set_alert_recurring
 from core.ai_handler import clean_symbol
 from core.handlers import register_custom_handlers
 from core.fetcher import fetch_klines, get_ticker_price
-from core.bingx.candles import get_all_usdt_pairs # Новый импорт для получения всех пар
-from core.patterns import analyze_patterns # calculate_indicators_and_states # Пока без calculate_indicators_and_states
-from core.formatter import format_report # Обновленный импорт
+from core.bingx.candles import get_all_usdt_pairs
+from core.patterns import analyze_patterns
+from core.formatter import format_report
 
-MSK_TZ = timezone(timedelta(hours=3))
 MY_CHAT_ID = 8029964519  # Твой личный Telegram ID (замени на свой)
 
 TF_PRIORITY = {"1w": 4, "1d": 3, "4h": 2, "1h": 1, "15m": 0}

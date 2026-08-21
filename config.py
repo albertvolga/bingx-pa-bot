@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from datetime import timezone, timedelta # Import for MSK_TZ
 
 # Загружаем переменные из .env
 load_dotenv()
@@ -9,6 +10,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BINGX_API_KEY = os.getenv("BINGX_API_KEY", "")
 BINGX_SECRET_KEY = os.getenv("BINGX_SECRET_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+# Определение Московского часового пояса
+MSK_TZ = timezone(timedelta(hours=3))
 
 # Маппинг символов для BingX
 SYMBOL_MAP = {
