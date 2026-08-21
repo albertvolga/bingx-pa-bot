@@ -126,7 +126,7 @@ SYMBOL_MAP = {
     "NFP": "NFP-USDT",
     "CTK": "CTK-USDT",
     "UMA": "UMA-USDT",
-    "LEO": "LEO-USDT", # USDT-LEO - Binance, а тут надо LEO-USDT (если есть)
+    "LEO": "USDT-LEO", # Изменено на USDT-LEO, так как API BingX может ожидать этот формат
     "PENDLE": "PENDLE-USDT",
     "ENA": "ENA-USDT", # Дубликат
     "W": "W-USDT", # Дубликат
