@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta # Keep datetime and timedelta for other uses
+from datetime import datetime, timedelta, timezone # Keep datetime and timedelta for other uses, add timezone
 import pandas as pd
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
