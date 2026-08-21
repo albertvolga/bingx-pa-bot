@@ -38,7 +38,7 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
         if end_time_ms:
             params["endTime"] = end_time_ms # Добавляем параметр endTime
             # Если указан endTime, то API возвращает свечи ЗАКОНЧИВШИЕСЯ ДО этого времени.
-            # Если мы хотим свечи "до" 11:00, то последняя будет закрыта в 10:00.
+            # Если мы хотим свечи "до" 11:00 UTC, то последняя будет закрыта в 10:00 UTC.
             # Поэтому для limit=X, мы получим X свечей, последняя из которых закрыта до endTime.
 
         try:
@@ -60,10 +60,10 @@ async def fetch_bingx_candles(symbol: str, timeframe: str = "1h", limit: int = 1
                         # API может вернуть не до конца отсортированные данные, сортируем по времени открытия
                         return sorted(klines, key=lambda x: x["time"])
         except Exception as e:
-            # print(f"⚠️ BingX API: Ошибка при получении свечей для {sym} с {url}: {e}") # Отладочный вывод
+            logging.warning(f"BingX API: Ошибка при получении свечей для {sym} с {url}: {e}")
             continue
 
-    print(f"⚠️ BingX API: Не удалось загрузить свечи для {sym} (TF: {tf_val}, Limit: {limit}, EndTime: {end_time_ms})")
+    logging.warning(f"BingX API: Не удалось загрузить свечи для {sym} (TF: {tf_val}, Limit: {limit}, EndTime: {end_time_ms})")
     return []
 
 async def fetch_klines(symbol: str, timeframe: str = "1h", limit: int = 10, interval: str = None, end_time_ms: int = None):
@@ -113,22 +113,25 @@ async def get_all_usdt_pairs() -> list:
                     if data.get("code") == 0 and "data" in data:
                         if "contracts" in url: # Swap
                             for item in data["data"]:
-                                if item.get("currency") == "USDT" and item.get("status") == "TRADING":
+                                # Только фьючерсные контракты с USDT
+                                if item.get("currency") == "USDT" and item.get("status") == "TRADING" and item.get("symbol"):
                                     all_pairs.add(item["symbol"])
                         elif "symbols" in url: # Spot
-                            for item in data["data"]: # Список элементов сразу в 'data'
-                                if item.get("quoteAsset") == "USDT" and item.get("status") == "TRADING":
+                            for item in data["data"]:
+                                # Только спотовые пары с USDT
+                                if item.get("quoteAsset") == "USDT" and item.get("status") == "TRADING" and item.get("symbol"):
                                     all_pairs.add(item["symbol"])
         except Exception as e:
-            print(f"⚠️ BingX API: Ошибка при получении пар с {url}: {e}")
+            logging.warning(f"BingX API: Ошибка при получении пар с {url}: {e}")
             continue
             
-    # Приводим к единому формату BTC-USDT
+    # Приводим к единому формату SYMBOL-USDT
     formatted_pairs = []
     for pair in all_pairs:
         if "-USDT" in pair:
             formatted_pairs.append(pair)
         elif "USDT" in pair: # Например, BTCUSDT -> BTC-USDT
-            formatted_pairs.append(f"{pair.replace('USDT', '')}-USDT")
+            # Заменяем только если USDT находится в конце, чтобы не затронуть токены типа "USDTP"
+            formatted_pairs.append(f"{pair.removesuffix('USDT')}-USDT")
 
     return sorted(list(set(formatted_pairs)))

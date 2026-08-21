@@ -29,7 +29,7 @@ dp = Dispatcher()
 async def check_price_alerts(bot: Bot):
     """Фоновый цикл проверки ценовых алертов."""
     while True:
-        try:
+        try: # Общий try-except для цикла, чтобы бот не зависал
             with get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, chat_id, symbol, target_price, condition, alert_type, is_recurring, triggered_count, note, created_at FROM alerts")
@@ -128,7 +128,10 @@ async def check_price_alerts(bot: Bot):
                         logging.info(f"Алерт {a_id} сработал для {symbol} на {current_price}. Многоразовый: {is_recurring}")
 
         except Exception as e:
-            logging.error(f"Ошибка в цикле проверки алертов: {e}")
+            logging.error(f"FATAL ERROR in check_price_alerts loop: {e}", exc_info=True)
+            # В случае фатальной ошибки, ждем дольше, чтобы не спамить и дать системе восстановиться.
+            await asyncio.sleep(60) # Увеличиваем паузу после ошибки
+            continue
 
         # Пауза между проверками цен BingX (12 секунд), чтобы не перегружать API
         await asyncio.sleep(12)
@@ -139,100 +142,125 @@ async def run_auto_schedule(bot: Bot):
     с учетом закрытия баров по MSK.
     """
     while True:
-        now_msk = datetime.now(MSK_TZ)
-        
-        # Определяем время следующего запуска (XX:55 каждой свечи)
-        # Если сейчас 10:56, то next_run будет 11:55.
-        # Если сейчас 10:54, то next_run будет 10:55.
-        next_run = now_msk.replace(minute=55, second=0, microsecond=0)
-        if now_msk.minute >= 55:
-            next_run += timedelta(hours=1)
+        try: # Общий try-except для цикла, чтобы бот не зависал
+            now_msk = datetime.now(MSK_TZ)
             
-        sleep_sec = (next_run - now_msk).total_seconds()
-        
-        if sleep_sec < 0: # Если почему-то пропустили, корректируем на следующий интервал
-            next_run += timedelta(hours=1)
-            sleep_sec = (next_run - now_msk).total_seconds()
-
-        logging.info(f"⏳ Следующий АвтоОтчёт запланирован на {next_run.strftime('%d.%m.%Y %H:%M:%S')} MSK (через {int(sleep_sec)} сек)")
-        await asyncio.sleep(sleep_sec)
-        
-        run_dt = datetime.now(MSK_TZ) # Фактическое время запуска
-        hour = run_dt.hour
-        weekday = run_dt.weekday() # 0 = ПН, 6 = ВС
-        
-        timeframes_to_scan = ["1h"] # Всегда сканируем 1h
-        
-        # 4H сканирование в 02:55, 06:55, 10:55, 14:55, 18:55, 22:55 MSK (5 минут до закрытия 4-часовой свечи)
-        if hour in [2, 6, 10, 14, 18, 22]: # Эти часы соответствуют времени запуска сканирования за 5 минут до закрытия
-            timeframes_to_scan.append("4h")
-            
-        # 1D сканирование в 02:55 MSK (5 минут до закрытия суточной свечи)
-        if hour == 2:
-            timeframes_to_scan.append("1d")
-            
-            # 1W сканирование в ночь с ВС на ПН в 02:55 MSK (для MSK это понедельник 02:55)
-            if weekday == 0: # Понедельник
-                timeframes_to_scan.append("1w")
+            # Определяем время следующего запуска (XX:55 каждой свечи)
+            next_run = now_msk.replace(minute=55, second=0, microsecond=0, microsecond=0)
+            if now_msk.minute >= 55:
+                next_run += timedelta(hours=1)
                 
-        timeframes_to_scan = list(set(timeframes_to_scan))
-        logging.info(f"🚀 Запуск АвтоОтчёта для ТФ: {timeframes_to_scan} в {run_dt.strftime('%H:%M')} MSK (5 минут до закрытия)")
-        
-        coins = await get_all_usdt_pairs() # Получаем все доступные пары с BingX
-        if not coins:
-            logging.warning("Не удалось получить список USDT пар для автосканирования.")
-            if MY_CHAT_ID:
-                 await bot.send_message(chat_id=MY_CHAT_ID, text=f"❌ АвтоОтчёт ({run_dt.strftime('%d.%m.%Y %H:%M')} МСК): Не удалось получить список монет для сканирования. Проверьте API BingX.", parse_mode="HTML")
-            continue
-
-        all_signals = []
-        
-        for tf in timeframes_to_scan:
-            for coin_full in coins: # coin_full будет типа "BTC-USDT"
-                try:
-                    # Для автоотчета берем достаточно свечей для анализа паттернов и индикаторов (BB480)
-                    # fetch_klines возвращает *закрытые* свечи. limit=500 -> 500 последних закрытых.
-                    limit_needed = 500 
-                    klines_for_analysis = await fetch_klines(coin_full, tf, limit=limit_needed)
-                    
-                    if klines_for_analysis and len(klines_for_analysis) >= 3: # Для анализа нужно мин 3
-                        df_patterns = pd.DataFrame(klines_for_analysis)
-                        
-                        # analyze_patterns теперь возвращает dict с паттерном, direction_bb и state_emoji
-                        # Оно само работает с df.iloc[-1] как с последней закрытой свечой.
-                        pat_data = analyze_patterns(df_patterns) 
-                        
-                        # last_closed_candle - это фактически последняя закрытая свеча из klines_for_analysis
-                        last_closed_candle = df_patterns.iloc[-1]
-                            
-                        all_signals.append({
-                            "symbol": clean_symbol(coin_full),
-                            "tf": tf,
-                            "pattern": pat_data["pattern"], 
-                            "direction_bb": pat_data.get("direction_bb", '⚪⚪⚪'), # Из analyze_patterns
-                            "state_emoji": pat_data.get("state_emoji", ''), # Из analyze_patterns
-                            "is_auto": True, # Флаг для formatter
-                            "timestamp": last_closed_candle['time'] # Добавляем timestamp для форматирования времени
-                        })
-                except Exception as e:
-                    logging.error(f"Ошибка получения или анализа {coin_full} {tf}: {e}")
-                    
-        # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшим
-        # TF_PRIORITY определен глобально
-        all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
-        
-        # Используем обновленный format_report
-        report_text = format_report(all_signals, is_auto=True, now_dt=run_dt)
+            sleep_sec = (next_run - now_msk).total_seconds()
             
-        try:
-            # Отправляем админу/активному чату со ЗВУКОМ
-            if MY_CHAT_ID:
-                await bot.send_message(chat_id=MY_CHAT_ID, text=report_text, parse_mode="HTML")
-                logging.info(f"✅ АвтоОтчёт успешно отправлен пользователю {MY_CHAT_ID}")
-            else:
-                logging.warning("MY_CHAT_ID не установлен, автоотчёт не будет отправлен.")
-        except Exception as err:
-            logging.error(f"❌ Ошибка отправки АвтоОтчёта: {err}")
+            # Если почему-то пропустили, корректируем на следующий интервал
+            # Это должно быть достаточно робастным, чтобы не зацикливаться.
+            while sleep_sec < 0:
+                next_run += timedelta(hours=1)
+                sleep_sec = (next_run - now_msk).total_seconds()
+
+            logging.info(f"⏳ Следующий АвтоОтчёт запланирован на {next_run.strftime('%d.%m.%Y %H:%M:%S')} MSK (через {int(sleep_sec)} сек)")
+            await asyncio.sleep(sleep_sec)
+            
+            # После пробуждения, пересчитываем run_dt, чтобы оно было актуальным
+            run_dt = datetime.now(MSK_TZ) 
+            hour = run_dt.hour
+            weekday = run_dt.weekday() # 0 = ПН, 6 = ВС
+            
+            timeframes_to_scan = ["1h"] # Всегда сканируем 1h
+            
+            # 4H сканирование в 02:55, 06:55, 10:55, 14:55, 18:55, 22:55 MSK (5 минут до закрытия 4-часовой свечи)
+            if hour in [2, 6, 10, 14, 18, 22]:
+                timeframes_to_scan.append("4h")
+                
+            # 1D сканирование в 02:55 MSK (5 минут до закрытия суточной свечи)
+            if hour == 2:
+                timeframes_to_scan.append("1d")
+                
+                # 1W сканирование в ночь с ВС на ПН в 02:55 MSK (для MSK это понедельник 02:55)
+                if weekday == 0: # Понедельник
+                    timeframes_to_scan.append("1w")
+                    
+            timeframes_to_scan = list(set(timeframes_to_scan))
+            logging.info(f"🚀 Запуск АвтоОтчёта для ТФ: {timeframes_to_scan} в {run_dt.strftime('%H:%M')} MSK (5 минут до закрытия)")
+            
+            coins = await get_all_usdt_pairs() # Получаем все доступные пары с BingX
+            if not coins:
+                logging.warning("Не удалось получить список USDT пар для автосканирования.")
+                if MY_CHAT_ID:
+                     await bot.send_message(chat_id=MY_CHAT_ID, text=f"❌ АвтоОтчёт ({run_dt.strftime('%d.%m.%Y %H:%M')} МСК): Не удалось получить список монет для сканирования. Проверьте API BingX.", parse_mode="HTML")
+                continue
+
+            all_signals = []
+            
+            # Для каждого таймфрейма, который нужно сканировать
+            for tf in timeframes_to_scan:
+                # Определяем `end_time_ms` для `fetch_klines`. 
+                # Если автоскан в XX:55 MSK, то он смотрит на свечу, закрывшуюся в XX:00 MSK.
+                # Поэтому `end_time_ms` должно быть XX:00 MSK (конвертированное в UTC).
+                candle_close_time_msk = run_dt.replace(minute=0, second=0, microsecond=0)
+                candle_close_time_utc = candle_close_time_msk.astimezone(timezone.utc)
+                end_time_ms_for_fetch = int(candle_close_time_utc.timestamp() * 1000)
+
+                for coin_full in coins:
+                    try:
+                        # Для автоотчета берем достаточно свечей для анализа паттернов и индикаторов (BB480)
+                        limit_needed = 500 
+                        klines_for_analysis = await fetch_klines(
+                            symbol=coin_full, 
+                            timeframe=tf, 
+                            limit=limit_needed,
+                            end_time_ms=end_time_ms_for_fetch # Передаем рассчитанное end_time_ms
+                        )
+                        
+                        if klines_for_analysis and len(klines_for_analysis) >= 3:
+                            df_patterns = pd.DataFrame(klines_for_analysis)
+                            
+                            # analyze_patterns теперь возвращает dict с паттерном, direction_bb и state_emoji
+                            # Оно само работает с df.iloc[-1] как с последней закрытой свечой.
+                            pat_data = analyze_patterns(df_patterns) 
+                            
+                            # last_closed_candle - это фактически последняя закрытая свеча из klines_for_analysis
+                            # убедимся, что это та свеча, которая закрылась в candle_close_time_msk
+                            # (время в klines - это время открытия, так что добавляем длительность TF)
+                            # упрощенная проверка - просто берем последнюю свечу как "анализируемую"
+                            last_closed_candle_api_time_ms = df_patterns.iloc[-1]['time']
+                            
+                            all_signals.append({
+                                "symbol": clean_symbol(coin_full),
+                                "tf": tf,
+                                "pattern": pat_data["pattern"], 
+                                "direction_bb": pat_data.get("direction_bb", '⚪⚪⚪'),
+                                "state_emoji": pat_data.get("state_emoji", ''),
+                                "is_auto": True, 
+                                "timestamp": last_closed_candle_api_time_ms # Время ОТКРЫТИЯ последней свечи
+                            })
+                        else:
+                            logging.debug(f"Not enough klines ({len(klines_for_analysis) if klines_for_analysis else 0}) for {coin_full} {tf} at {candle_close_time_msk.strftime('%H:%M')} MSK to analyze patterns.")
+                    except Exception as e:
+                        logging.error(f"Ошибка получения или анализа {coin_full} {tf}: {e}", exc_info=True)
+                        
+            # СОРТИРОВКА: 1. По алфавиту монеты, 2. По ТФ от большего к меньшим
+            # TF_PRIORITY определен глобально
+            all_signals.sort(key=lambda x: (x["symbol"], -TF_PRIORITY.get(x["tf"].lower(), 0)))
+            
+            # Используем обновленный format_report
+            report_text = format_report(all_signals, is_auto=True, now_dt=run_dt)
+                
+            try:
+                # Отправляем админу/активному чату со ЗВУКОМ
+                if MY_CHAT_ID:
+                    await bot.send_message(chat_id=MY_CHAT_ID, text=report_text, parse_mode="HTML")
+                    logging.info(f"✅ АвтоОтчёт успешно отправлен пользователю {MY_CHAT_ID}")
+                else:
+                    logging.warning("MY_CHAT_ID не установлен, автоотчёт не будет отправлен.")
+            except Exception as err:
+                logging.error(f"❌ Ошибка отправки АвтоОтчёта: {err}", exc_info=True)
+
+        except Exception as e:
+            logging.error(f"FATAL ERROR in run_auto_schedule loop: {e}", exc_info=True)
+            # В случае фатальной ошибки, ждем дольше.
+            await asyncio.sleep(60)
+            continue
 
 async def main():
     init_db() # Вызываем инициализацию БД здесь один раз

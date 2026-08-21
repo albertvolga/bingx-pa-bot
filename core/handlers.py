@@ -184,9 +184,18 @@ async def cmd_scan_universal(message: Message):
             # Устанавливаем год в текущий, если не указан, и добавляем часовой пояс MSK
             # BingX API работает с timestamp в UTC, поэтому конвертируем.
             # Мы хотим запросить данные *до* определенного времени MSK.
-            scan_dt_utc = parsed_dt.replace(year=now_msk.year, tzinfo=datetime.timezone.utc) - datetime.timedelta(hours=3) # Convert back to UTC for BingX API if original time was MSK
+            # Устанавливаем год в текущий, если не указан, и добавляем часовой пояс MSK
+            # Затем конвертируем в UTC для BingX API.
+            # Если пользователь ввел "15.08 10:00", это 10:00 MSK.
+            # Нам нужно, чтобы BingX API вернул свечи, *закрытые до* 10:00 MSK (которое 07:00 UTC).
+            parsed_dt = parsed_dt.replace(year=now_msk.year) # Устанавливаем год
 
-            scan_dt = scan_dt_utc # The scan_datetime passed to run_scan should be in UTC or explicitly handled
+            # Создаем naive datetime object и делаем его aware в MSK
+            local_dt_msk = MSK_TZ.localize(parsed_dt)
+            # Конвертируем в UTC
+            scan_dt_utc = local_dt_msk.astimezone(timezone.utc)
+            
+            scan_dt = scan_dt_utc # The scan_datetime passed to run_scan should be in UTC
             
         except ValueError:
             await message.answer("❌ Неверный формат даты/времени. Используйте <code>/scan ДД.ММ ЧЧ:ММ</code> или <code>/scan ДД.ММ</code>.")

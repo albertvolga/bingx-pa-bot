@@ -315,12 +315,16 @@ def analyze_patterns(candles: list, m15_candles: list = None) -> dict:
     """
     candle_list = normalize_candles(candles)
     if not candle_list or len(candle_list) < 3:
+        logging.info("Not enough candles for pattern analysis, returning default.")
         return {"pattern": "-", "direction_bb": "⚪⚪⚪", "state_emoji": ""}
     
     df = pd.DataFrame(candle_list)
 
     # Детектируем паттерны
     detected_patterns = []
+
+    # Добавляем логирование перед каждым детектором для отладки
+    logging.debug(f"Analyzing patterns for last candle. Close: {df.iloc[-1]['close']}")
 
     cmb = detect_combo_pin_engulfing(candle_list)
     if cmb: detected_patterns.append(cmb)
@@ -349,6 +353,9 @@ def analyze_patterns(candles: list, m15_candles: list = None) -> dict:
         
     pattern_str = "/".join(sorted(list(set(detected_patterns)))) if detected_patterns else "-"
 
+    if pattern_str != "-":
+        logging.info(f"Detected patterns: {pattern_str}")
+    
     # Детектируем направление BB и состояние свечи
     direction_bb_emoji = get_bb_direction_emoji(df)
     state_emoji = get_candle_state_emoji(df)
