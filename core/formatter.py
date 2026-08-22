@@ -12,22 +12,18 @@ TF_SHORT_MAP = {
     '4H': '4h',
     '1D': '1d',
     '1W': '1w',
-    '14': '1h'
 }
 
+TF_ORDER = {'1w': 1, '1d': 2, '4h': 3, '1h': 4}
+
 def clean_symbol(symbol: str) -> str:
-    """Убирает суффиксы и тире из символа для лаконичного вывода."""
     return symbol.replace("-USDT", "").replace("USDT", "")
 
 def get_display_bar_time(dt_open: datetime, tf: str, is_auto: bool) -> str:
-    """
-    Возвращает форматированное время закрытия/открытия бара в зависимости от типа скана.
-    """
     if not isinstance(dt_open, datetime):
         return "--:--"
 
     dt_open_msk = dt_open.astimezone(MSK_TZ)
-
     tf_clean = str(tf).lower()
     tf_offsets = {
         '1h': timedelta(hours=1),
@@ -44,9 +40,6 @@ def get_display_bar_time(dt_open: datetime, tf: str, is_auto: bool) -> str:
         return dt_open_msk.strftime("%H:%M")
 
 def merge_signals(signals_list: list) -> list:
-    """
-    Группирует паттерны для одинаковых (symbol, time, tf) и добавляет информацию по индикаторам.
-    """
     grouped = {}
     for sig in signals_list:
         key = (sig['symbol'], sig['tf'], sig.get('timestamp'))
@@ -96,28 +89,25 @@ def merge_signals(signals_list: list) -> list:
             'state_emoji': data['state_emoji'],
             'bb_breakthrough': bb_str,
         })
+
+    # Сортировка: сначала по тикеру, затем по старшинству ТФ (1w -> 1d -> 4h -> 1h)
+    merged_rows.sort(key=lambda x: (x['symbol'], TF_ORDER.get(x['tf'], 99)))
     return merged_rows
 
 def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None) -> str:
-    """
-    Формирует итоговый текст отчета с моноширинной таблицей.
-    """
     if now_dt is None:
         now_dt = datetime.now(MSK_TZ)
         
     date_str = now_dt.strftime("%d.%m.%Y %H:%M")
     
-    if is_auto:
-        header_title = f"📊 АвтоОтчёт ({date_str} МСК):"
-    else:
-        header_title = f"📊 Отчёт о паттернах ({date_str} МСК):"
+    header_title = f"📊 АвтоОтчёт ({date_str} МСК):" if is_auto else f"📊 Отчёт о паттернах ({date_str} МСК):"
         
     if not signals:
         return f"<b>{header_title}</b>\n\n✅ Интересных паттернов не найдено."
 
     merged_signals = merge_signals(signals)
 
-    table_lines = ["АКТ  | ВРЕМЯ | ТФ | НАПР | ПАТ     | СОСТ | ББ", "------------------------------------------"]
+    table_lines = ["АКТ  | ВРЕМЯ | ТФ | НАПР   | ПАТ     | СОСТ| ББ", "--------------------------------------------"]
 
     for row in merged_signals:
         sym = f"{row['symbol']:<4}"
@@ -125,7 +115,7 @@ def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None)
         tf = f"{row['tf']:<2}"
         dir_bb = f"{row['direction_bb']}"
         pat = f"{row['pattern']:<7}"
-        st = f"{row['state_emoji']:<4}"
+        st = f"{row['state_emoji']:<3}" if row['state_emoji'] else "   "
         bb = f"{row['bb_breakthrough']}"
 
         line = f"{sym} | {tm} | {tf} | {dir_bb} | {pat} | {st} | {bb}"
@@ -135,9 +125,6 @@ def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None)
     return f"<b>{header_title}</b>\n\n<code>{table_text}</code>"
 
 def format_alerts_table(alerts: list) -> str:
-    """
-    Форматирует список алертов для ИИ-обработчика/команд.
-    """
     if not alerts:
         return "У вас нет активных алертов."
     

@@ -17,7 +17,6 @@ SYMBOLS = [
 ]
 
 def register_custom_handlers(dp, bot=None):
-    """Регистрирует роутер хэндлеров в диспетчере."""
     dp.include_router(router)
 
 async def run_scan(message: Message, tf: str):
@@ -28,10 +27,9 @@ async def run_scan(message: Message, tf: str):
     
     for sym_full in SYMBOLS:
         try:
-            # ДОБАВЛЕН AWAIT
-            klines = await fetch_bingx_candles(sym_full, tf=tf, limit=100)
+            # Запрашиваем 600 свечей для точного расчета BB(480)
+            klines = await fetch_bingx_candles(sym_full, tf=tf, limit=600)
             if klines is None or klines.empty or len(klines) < 30:
-                logging.warning(f"Недостаточно данных для {sym_full} {tf}")
                 continue
 
             candles_list = klines.to_dict('records')
@@ -75,16 +73,15 @@ async def cmd_scan_1w(message: Message):
 @router.message(Command("scan"))
 async def cmd_scan_all(message: Message):
     now_msk = datetime.now(MSK_TZ)
-    status_msg = await message.answer("🔍 Запуск полного сканирования (1h, 4h, 1d)...")
+    status_msg = await message.answer("🔍 Запуск полного сканирования (1w, 1d, 4h, 1h)...")
     
     all_signals = []
-    tfs = ["1h", "4h", "1d"]
+    tfs = ["1w", "1d", "4h", "1h"]
     
     for tf in tfs:
         for sym_full in SYMBOLS:
             try:
-                # ДОБАВЛЕН AWAIT
-                klines = await fetch_bingx_candles(sym_full, tf=tf, limit=100)
+                klines = await fetch_bingx_candles(sym_full, tf=tf, limit=600)
                 if klines is None or klines.empty or len(klines) < 30:
                     continue
 
