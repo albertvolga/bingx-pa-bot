@@ -1,7 +1,8 @@
 import sqlite3
 import os
+from pathlib import Path
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alerts.db")
+DB_PATH = Path(__file__).resolve().parent.parent / "alerts.db"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
