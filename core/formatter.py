@@ -4,71 +4,88 @@ from datetime import datetime, timezone, timedelta
 MSK_TZ = timezone(timedelta(hours=3))
 
 TF_SHORT_MAP = {
-    '1h': '1h',
-    '4h': '4h',
-    '1d': '1d',
-    '1w': '1w',
-    '1H': '1h',
-    '4H': '4h',
-    '1D': '1d',
-    '1W': '1w',
+    '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W',
+    '1H': '1H', '4H': '4H', '1D': '1D', '1W': '1W',
 }
 
-TF_ORDER = {'1w': 1, '1d': 2, '4h': 3, '1h': 4}
+TF_ORDER = {'1w': 1, '1d': 2, '4h': 3, '1h': 4, '1W': 1, '1D': 2, '4H': 3, '1H': 4}
 
 def clean_symbol(symbol: str) -> str:
     return symbol.replace("-USDT", "").replace("USDT", "")
 
-def get_display_bar_time(dt_open: datetime, tf: str, is_auto: bool) -> str:
-    if not isinstance(dt_open, datetime):
-        return "--:--"
-
-    dt_open_msk = dt_open.astimezone(MSK_TZ)
-    tf_clean = str(tf).lower()
-    tf_offsets = {
-        '1h': timedelta(hours=1),
-        '4h': timedelta(hours=4),
-        '1d': timedelta(days=1),
-        '1w': timedelta(weeks=1),
-    }
-
-    if is_auto:
-        offset = tf_offsets.get(tf_clean, timedelta(hours=1))
-        dt_close_msk = dt_open_msk + offset
-        return dt_close_msk.strftime("%H:%M")
-    else:
+def get_display_bar_time(dt_open, tf: str, is_auto: bool) -> str:
+    try:
+        if not isinstance(dt_open, datetime):
+            if isinstance(dt_open, (int, float)):
+                dt_open = datetime.fromtimestamp(dt_open / 1000, tz=timezone.utc)
+            else:
+                return "--:--"
+        
+        dt_open_msk = dt_open.astimezone(MSK_TZ)
+        tf_clean = str(tf).lower()
+        
+        # Для 1H показываем точное время закрытия бара (часы:минуты)
+        if tf_clean == '1h':
+            return dt_open_msk.strftime("%H:%M")
+        
+        # Для остальных ТФ показываем только час закрытия (без даты)
+        # 4H: закрываются в 03, 07, 11, 15, 19, 23 MSK
+        if tf_clean == '4h':
+            return dt_open_msk.strftime("%H:00")
+        
+        # 1D и 1W: закрываются в 03:00 MSK (следующий день/неделя)
+        if tf_clean in ['1d', '1w']:
+            return "03:00"
+            
         return dt_open_msk.strftime("%H:%M")
-
+        
+    except Exception:
+        return "--:--"
 def merge_signals(signals_list: list) -> list:
     grouped = {}
+    
+    if not signals_list:
+        return []
+
     for sig in signals_list:
-        key = (sig['symbol'], sig['tf'], sig.get('timestamp'))
+        # Безопасное извлечение данных
+        symbol = sig.get('symbol', 'UNK')
+        tf = str(sig.get('tf', '1h')).lower()
+        timestamp = sig.get('timestamp')
+        
+        key = (symbol, tf, timestamp)
         
         if key not in grouped:
-            ts = sig.get('timestamp')
+            # Обработка времени
+            ts = timestamp
             if hasattr(ts, 'to_pydatetime'):
                 dt_val = ts.to_pydatetime().replace(tzinfo=timezone.utc)
             elif isinstance(ts, (int, float)):
                 dt_val = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-            else:
+            elif isinstance(ts, datetime):
                 dt_val = ts
+            else:
+                dt_val = datetime.now(MSK_TZ)
 
             grouped[key] = {
-                'symbol': sig['symbol'],
-                'tf': sig['tf'],
+                'symbol': symbol,
+                'tf': tf,
                 'patterns': [],
                 'bb_breakthroughs': [],
                 'is_auto': sig.get('is_auto', False),
                 'dt_open_for_display': dt_val,
-                'direction_bb': sig.get('direction_bb', '⚪⚪⚪'),
-                'state_emoji': sig.get('state_emoji', ''),
+                'direction_bb': sig.get('direction_bb') or '⚪⚪⚪',
+                'state_emoji': sig.get('state_emoji') or '',
             }
         
-        if sig.get('pattern') and sig['pattern'] != "-":
-            grouped[key]['patterns'].append(sig['pattern'])
+        # Добавляем паттерн, если он есть и не "-"
+        pat = sig.get('pattern')
+        if pat and pat != "-":
+            grouped[key]['patterns'].append(pat)
 
-        if sig.get('bb_breakthrough') and sig['bb_breakthrough'] != "-":
-            grouped[key]['bb_breakthroughs'].append(sig['bb_breakthrough'])
+        bb = sig.get('bb_breakthrough')
+        if bb and bb != "-":
+            grouped[key]['bb_breakthroughs'].append(bb)
 
     merged_rows = []
     for k, data in grouped.items():
@@ -78,7 +95,7 @@ def merge_signals(signals_list: list) -> list:
         unique_bbs = sorted(list(dict.fromkeys(data['bb_breakthroughs'])))
         bb_str = "/".join(unique_bbs) if unique_bbs else ""
         
-        tf_display = TF_SHORT_MAP.get(str(data['tf']), str(data['tf']))
+        tf_display = TF_SHORT_MAP.get(data['tf'], data['tf'].upper())
 
         merged_rows.append({
             'symbol': clean_symbol(data['symbol']),
@@ -90,8 +107,8 @@ def merge_signals(signals_list: list) -> list:
             'bb_breakthrough': bb_str,
         })
 
-    # Сортировка: сначала по тикеру, затем по старшинству ТФ (1w -> 1d -> 4h -> 1h)
-    merged_rows.sort(key=lambda x: (x['symbol'], TF_ORDER.get(x['tf'], 99)))
+    # Сортировка
+    merged_rows.sort(key=lambda x: (x['symbol'], TF_ORDER.get(x['tf'].lower(), 99)))
     return merged_rows
 
 def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None) -> str:
@@ -99,13 +116,18 @@ def format_report(signals: list, is_auto: bool = False, now_dt: datetime = None)
         now_dt = datetime.now(MSK_TZ)
         
     date_str = now_dt.strftime("%d.%m.%Y %H:%M")
-    
     header_title = f"📊 АвтоОтчёт ({date_str} МСК):" if is_auto else f"📊 Отчёт о паттернах ({date_str} МСК):"
-        
-    if not signals:
+    
+    # Если сигналов нет - сразу возвращаем
+    if not signals or len(signals) == 0:
         return f"<b>{header_title}</b>\n\n✅ Интересных паттернов не найдено."
 
+    # Мерджим сигналы
     merged_signals = merge_signals(signals)
+    
+    # Если после мерджа стало пусто (были дубли или ошибки)
+    if not merged_signals:
+        return f"<b>{header_title}</b>\n\n✅ Интересных паттернов не найдено."
 
     table_lines = ["АКТ  | ВРЕМЯ | ТФ | НАПР   | ПАТ     | СОСТ| ББ", "--------------------------------------------"]
 

@@ -26,6 +26,7 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="/scan_1h", description="📊 Скан 1H"),
         BotCommand(command="/scan_4h", description="📊 Скан 4H"),
         BotCommand(command="/scan_1d", description="📊 Скан 1D"),
+        BotCommand(command="/scan_1w", description="📊 Скан 1W"),
         BotCommand(command="/alerts", description="🔔 Мои алерты"),
         BotCommand(command="/del_all", description="🗑 Удалить все"),
         BotCommand(command="/restart_bot", description="🔄 Перезапуск")
