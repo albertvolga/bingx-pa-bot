@@ -51,18 +51,19 @@ def add_alert(
     symbol: str, 
     target_price: float = None, 
     note: str = "Алерт", 
-    condition: str = None, # 'cross_above', 'cross_below', 'cross'
-    alert_type: str = "PRICE", # 'PRICE', 'PATTERN', 'TIMER'
-    is_recurring: bool = False
+    condition: str = None, 
+    alert_type: str = "PRICE", 
+    is_recurring: bool = False,
+    tf: str = "1d"  # Добавлен таймфрейм
 ) -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO alerts (chat_id, symbol, target_price, note, condition, alert_type, is_recurring) 
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO alerts (chat_id, symbol, target_price, note, condition, alert_type, is_recurring, tf) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (chat_id, symbol.upper(), target_price, note, condition, alert_type, int(is_recurring))
+        (chat_id, symbol.upper(), target_price, note, condition, alert_type, int(is_recurring), tf)
     )
     conn.commit()
     alert_id = cursor.lastrowid
