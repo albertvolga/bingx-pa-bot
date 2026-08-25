@@ -65,6 +65,6 @@ async def get_ticker_price(symbol: str) -> float:
         return float(df["close"].iloc[-1])
     return 0.0
 
-def get_all_usdt_pairs():
+async def get_all_usdt_pairs():
     """Возвращает строго ограниченный список активов для сканирования."""
     return TARGET_SYMBOLS
